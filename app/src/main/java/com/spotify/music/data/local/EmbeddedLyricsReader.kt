@@ -1,6 +1,7 @@
 package com.spotify.music.data.local
 
 import java.io.File
+import java.nio.charset.Charset
 
 /**
  * Reads song lyrics for local audio files. Prefers a sidecar .lrc/.txt file,
@@ -17,12 +18,15 @@ class EmbeddedLyricsReader {
         val base = file.nameWithoutExtension
         val dir = file.parentFile
         if (dir != null) {
-            for (ext in listOf(".lrc", ".LRC", ".txt")) {
+            outer@ for (ext in listOf(".lrc", ".LRC", ".txt")) {
                 val side = File(dir, base + ext)
-                if (side.isFile && side.length() < 1_500_000) {
-                    runCatching { side.readText(Charsets.UTF_8) }.let {
-                        if (it.isSuccess && it.getOrNull()?.isNotBlank() == true) return it.getOrNull()
-                    }
+                if (!side.isFile || side.length() >= 1_500_000) continue
+                val raw = runCatching { side.readBytes() }.getOrNull() ?: continue
+                for (decoded in listOf(
+                    runCatching { String(raw, Charsets.UTF_8) }.getOrNull(),
+                    runCatching { String(raw, Charset.forName("GBK")) }.getOrNull()
+                )) {
+                    if (decoded != null && decoded.isNotBlank()) return decoded
                 }
             }
         }
@@ -60,19 +64,22 @@ class EmbeddedLyricsReader {
         // syncsafe size
         val size = syncsafe(b, 6, 4)
         val end = minOf(b.size, 10 + size)
+        val idLen = if (major == 2) 3 else 4
+        val sizeLen = if (major == 2) 3 else 4
         var i = 10
-        while (i + 10 <= end) {
-            val id = iso(b, i, 4)
-            val frameSize = when {
-                major >= 4 -> syncsafe(b, i + 4, 4)
-                else -> bigEndian(b, i + 4, 4)
-            }
-            val dataStart = i + 10
+        while (i + 6 + idLen <= end) {
+            val id = iso(b, i, idLen)
+            val frameSize = if (major >= 4) syncsafe(b, i + idLen, 4)
+            else bigEndian(b, i + idLen, sizeLen)
+            val dataStart = i + idLen + 4
             val dataEnd = minOf(end, dataStart + frameSize)
-            if (frameSize <= 0) break
-            if (id == "USLT") {
-                val text = readUslt(b, dataStart, dataEnd) ?: return null
-                if (text.isNotBlank()) return text
+            if (frameSize <= 0 || dataEnd <= dataStart) break
+            // USLT = v2.2, USLT = v2.3/2.4
+            if ((major == 2 && id == "ULT") || (major != 2 && id == "USLT")) {
+                val text = runCatching { readUslt(b, dataStart, dataEnd) }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                if (text != null) return text
+                // otherwise keep scanning other frames (some files carry duplicates)
             }
             i = dataEnd
         }
@@ -88,9 +95,9 @@ class EmbeddedLyricsReader {
         p = skipDescriptor(b, p, end, encoding)
         if (p < 0 || p >= end) return null
         val text = when (encoding) {
-            0 -> decodeLatin1(b, p, end)
+            0 -> decodeWithFallback(b, p, end, firstUtf16 = false)
             1, 2 -> decodeUtf16(b, p, end)
-            else -> decodeUtf8(b, p, end)
+            else -> decodeWithFallback(b, p, end, firstUtf16 = true)
         }
         // strip trailing NULs / whitespace that frequently pad the frame
         return text.trimStart('\u0000').trimEnd('\u0000').trim()
@@ -155,8 +162,9 @@ class EmbeddedLyricsReader {
             if (idx > 0) {
                 val key = comment.substring(0, idx).uppercase()
                 if (key == "LYRICS" || key == "UNSYNCEDLYRICS") {
-                    val v = comment.substring(idx + 1)
+                    val v = comment.substring(idx + 1).trim('\u0000', ' ', '\t', '\r', '\n')
                     if (v.isNotBlank()) return v
+                    // keep scanning later comments if this one was just tags
                 }
             }
         }
@@ -218,6 +226,30 @@ class EmbeddedLyricsReader {
 
     private fun decodeUtf8(b: ByteArray, s: Int, e: Int): String =
         String(b, s.coerceAtMost(b.size), (e - s).coerceAtLeast(0), Charsets.UTF_8)
+
+    /**
+     * Decode text bytes with UTF-8 first, falling back to GBK. Many Chinese
+     * lyric tags wrongly use encoding byte 0 (ISO-8859-1) or 3 (UTF-8) but
+     * store GBK bytes; this recovers them instead of returning mojibake/null.
+     */
+    private fun decodeWithFallback(b: ByteArray, s: Int, e: Int, firstUtf16: Boolean): String {
+        val start = s.coerceIn(0, b.size)
+        val len = (e - start).coerceAtLeast(0)
+        if (len == 0) return ""
+        val slice = if (len <= e - start) b.copyOfRange(start, start + len) else b.copyOfRange(start, e)
+        if (firstUtf16) {
+            // heuristic: UTF-16 content is dominated by 0x00 high bytes
+            var nul = 0
+            var total = 0
+            slice.forEachIndexed { i, by -> if (i % 2 == 1 && by.toInt() == 0) nul++ else if (i % 2 == 1) total++ }
+            if (total > 0 && nul >= total / 2) return decodeUtf16(b, start, start + len - (len % 2))
+        }
+        val utf8 = runCatching { String(slice, Charsets.UTF_8) }.getOrNull()
+        if (utf8 != null && !utf8.contains('\uFFFD')) return utf8
+        val gbk = runCatching { String(slice, Charset.forName("GBK")) }.getOrNull()
+        if (gbk != null && !gbk.contains('\uFFFD')) return gbk
+        return utf8 ?: String(slice, Charsets.ISO_8859_1)
+    }
 
     private fun decodeLatin1(b: ByteArray, s: Int, e: Int): String =
         String(b, s.coerceAtMost(b.size), (e - s).coerceAtLeast(0), Charsets.ISO_8859_1)

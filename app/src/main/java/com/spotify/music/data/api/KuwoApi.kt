@@ -127,19 +127,31 @@ class KuwoApi(
     }
 
     private suspend fun get(path: String, referer: String? = null): JsonElement? = withContext(Dispatchers.IO) {
-        try {
-            ensureSession()
+        ensureSession()
+        val direct = tryGet(path, referer, currentCookie(), currentSecret())
+        if (direct != null) return@withContext direct
+        // If a logged-in cookie is set but yields nothing (stale/expired token,
+        // server-side reject), gracefully fall back to the anonymous session so
+        // the home/browse feeds are never left blank after a web login.
+        if (overrideCookie != null) {
+            return@withContext tryGet(path, referer, KuwoSecret.COOKIE, liveSecret ?: KuwoSecret.secret)
+        }
+        null
+    }
+
+    private fun tryGet(path: String, referer: String?, cookie: String, secret: String): JsonElement? {
+        return try {
             val url = if (path.startsWith("http")) path else "https://www.kuwo.cn$path"
             val builder = Request.Builder()
                 .url(url)
-                .header("Cookie", currentCookie())
-                .header("Secret", currentSecret())
+                .header("Cookie", cookie)
+                .header("Secret", secret)
                 .header("Referer", referer ?: "https://www.kuwo.cn/")
                 .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                 .header("Accept", "application/json,text/plain,*/*")
             sessionClient.newCall(builder.build()).execute().use { resp ->
-                val body = resp.body?.string() ?: return@withContext null
-                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string() ?: return@use null
+                if (!resp.isSuccessful) return@use null
                 runCatching { json.parseToJsonElement(body) }.getOrNull()
             }
         } catch (e: Exception) {
@@ -173,18 +185,23 @@ class KuwoApi(
     /** Fetch standard LRC lyrics (new h5 endpoint, stable & public). */
     suspend fun getLyrics(musicId: String): List<LyricLine> {
         val url = "https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${urlEncode(musicId)}&httpsStatus=1"
-        val raw = withContext(Dispatchers.IO) {
-            runCatching {
-                client.newCall(
-                    Request.Builder().url(url)
-                        .header("Cookie", currentCookie())
-                        .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
-                        .build()
-                ).execute().use { it.body?.string() }
-            }.getOrNull()
-        } ?: return emptyList()
-        return parseLrcJson(raw)
+        val cookie = currentCookie()
+        var raw = fetchLrc(url, cookie)
+        if (raw == null && overrideCookie != null) {
+            raw = fetchLrc(url, KuwoSecret.COOKIE)
+        }
+        return parseLrcJson(raw ?: return emptyList())
     }
+
+    private fun fetchLrc(url: String, cookie: String): String? =
+        runCatching {
+            client.newCall(
+                Request.Builder().url(url)
+                    .header("Cookie", cookie)
+                    .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
+                    .build()
+            ).execute().use { it.body?.string() }
+        }.getOrNull()
 
     /** Parse the newh5 lrclist into LyricLine list. */
     private fun parseLrcJson(raw: String): List<LyricLine> {

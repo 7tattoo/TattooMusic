@@ -12,11 +12,17 @@ import androidx.core.content.ContextCompat
 import com.spotify.music.data.AppSettings
 import com.spotify.music.data.model.Song
 import com.spotify.music.data.model.SongSource
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
@@ -37,6 +43,31 @@ class LocalMusicRepository(
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cacheJson = Json { ignoreUnknownKeys = true }
+
+    init {
+        // Restore the last scan from disk so music is shown right after launch
+        // without forcing the user to re-scan every time.
+        scope.launch(Dispatchers.IO) { restoreCache() }
+    }
+
+    private val cacheFile: File get() = File(ctx.filesDir, "local_songs_cache.json")
+
+    private fun restoreCache() {
+        val f = cacheFile
+        if (!f.exists()) return
+        runCatching {
+            val cache = cacheJson.decodeFromString<List<Song>>(f.readText())
+                .filter { it.source == SongSource.LOCAL && !it.localPath.isNullOrBlank() }
+            if (cache.isNotEmpty()) _songs.value = cache
+        }
+    }
+
+    private fun persist(list: List<Song>) {
+        runCatching { cacheFile.writeText(cacheJson.encodeToString(list)) }
+    }
 
     // Audio-only extensions (no video containers like .mp4/.mkv/.avi),
     // so the scanner never picks up video files as music.
@@ -78,6 +109,7 @@ class LocalMusicRepository(
                 scanViaMediaStore(list, ignored, roots)
             }
             _songs.value = list
+            if (list.isNotEmpty()) persist(list)
         } finally {
             _isScanning.value = false
         }
