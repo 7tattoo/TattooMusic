@@ -27,7 +27,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import com.spotify.music.player.LyricStatus
 import com.spotify.music.player.PlayerController
 
@@ -40,9 +40,9 @@ fun LyricsView(
     controller: PlayerController,
     modifier: Modifier = Modifier
 ) {
-    val lyrics by controller.lyrics.collectAsStateWithLifecycle()
-    val idx by controller.currentLyricIndex.collectAsStateWithLifecycle()
-    val status by controller.lyricStatus.collectAsStateWithLifecycle()
+    val lyrics by controller.lyrics.collectAsState()
+    val idx by controller.currentLyricIndex.collectAsState()
+    val status by controller.lyricStatus.collectAsState()
 
     if (status == LyricStatus.LOADING && lyrics.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -104,8 +104,8 @@ fun LyricTicker(
     modifier: Modifier = Modifier,
     unknownText: String = "暂无歌词"
 ) {
-    val text by controller.currentLyricText.collectAsStateWithLifecycle()
-    val status by controller.lyricStatus.collectAsStateWithLifecycle()
+    val text by controller.currentLyricText.collectAsState()
+    val status by controller.lyricStatus.collectAsState()
     val content = when {
         status == LyricStatus.LOADING -> "歌词加载中…"
         !text.isNullOrBlank() -> text!!

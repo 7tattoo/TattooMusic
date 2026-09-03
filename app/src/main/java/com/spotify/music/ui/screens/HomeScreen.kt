@@ -55,7 +55,10 @@ fun HomeScreen(
 ) {
     var data by remember { mutableStateOf<HomeData?>(null) }
 
-    LaunchedEffect(Unit) {
+    // Reload whenever the kuwo login cookie changes so the home feed shows
+    // personalized content immediately after logging in / out.
+    val loginCookie by container.settings.kuwoCookie.collectAsState()
+    LaunchedEffect(loginCookie) {
         data = container.homeRepository.load()
     }
 

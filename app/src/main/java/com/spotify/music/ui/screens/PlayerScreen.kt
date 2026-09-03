@@ -67,7 +67,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import coil.compose.AsyncImage
 import com.spotify.music.AppContainer
 import com.spotify.music.data.model.Comment
@@ -92,7 +92,7 @@ fun PlayerScreen(
 ) {
     val pc = container.playerController
     val context = LocalContext.current
-    val song by pc.currentSong.collectAsStateWithLifecycle()
+    val song by pc.currentSong.collectAsState()
 
     Box(
         modifier = modifier
@@ -185,7 +185,7 @@ fun LandscapePlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val pc = container.playerController
-    val song by pc.currentSong.collectAsStateWithLifecycle()
+    val song by pc.currentSong.collectAsState()
     var showLyrics by remember { mutableStateOf(false) }
 
     BoxWithConstraints(
@@ -285,8 +285,8 @@ private fun SongHeader(song: Song?) {
 
 @Composable
 private fun ProgressRow(pc: PlayerController, modifier: Modifier = Modifier) {
-    val position by pc.positionMs.collectAsStateWithLifecycle()
-    val duration by pc.durationMs.collectAsStateWithLifecycle()
+    val position by pc.positionMs.collectAsState()
+    val duration by pc.durationMs.collectAsState()
     var dragPosition by remember { mutableStateOf<Float?>(null) }
     val shown = dragPosition ?: position.toFloat()
     val total = (if (duration > 0) duration else 1).toFloat()
@@ -312,9 +312,9 @@ private fun ProgressRow(pc: PlayerController, modifier: Modifier = Modifier) {
 
 @Composable
 private fun TransportControls(pc: PlayerController, modifier: Modifier = Modifier) {
-    val playing by pc.isPlaying.collectAsStateWithLifecycle()
-    val hasPrev by pc.hasPrevious.collectAsStateWithLifecycle()
-    val hasNext by pc.hasNext.collectAsStateWithLifecycle()
+    val playing by pc.isPlaying.collectAsState()
+    val hasPrev by pc.hasPrevious.collectAsState()
+    val hasNext by pc.hasNext.collectAsState()
 
     Row(
         modifier = modifier.padding(vertical = 8.dp),
@@ -365,7 +365,7 @@ private fun TransportControls(pc: PlayerController, modifier: Modifier = Modifie
 private fun BottomActionRow(pc: PlayerController, container: AppContainer, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val song by pc.currentSong.collectAsStateWithLifecycle()
+    val song by pc.currentSong.collectAsState()
 
     var showComments by remember { mutableStateOf(false) }
 
