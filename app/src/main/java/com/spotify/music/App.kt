@@ -6,7 +6,9 @@ import android.content.Context
 /** Simple manual DI container so service and UI share one set of objects. */
 class AppContainer(context: Context) {
     val settings = com.spotify.music.data.AppSettings(context)
-    val api = com.spotify.music.data.api.KuwoApi()
+    val api = com.spotify.music.data.api.KuwoApi(
+        logFile = java.io.File(context.getExternalFilesDir(null), "kuwo_api.log")
+    )
     val embeddedLyricsReader = com.spotify.music.data.local.EmbeddedLyricsReader()
     val lyricsRepository = com.spotify.music.data.repo.LyricsRepository(api, embeddedLyricsReader)
     val playerController = com.spotify.music.player.PlayerController(context, api, lyricsRepository)

@@ -25,14 +25,24 @@ class HomeRepository(private val api: KuwoApi) {
     private val playlistThemes = listOf("华语流行", "经典老歌", "DJ舞曲", "英文金曲", "网络热歌", "轻音乐")
 
     suspend fun load(): HomeData = runCatching {
-        val daily = api.searchSongs(dailyKeywords.random(), 1, 12)
-        val guess = api.searchSongs(guessKeywords.random(), 1, 12)
+        val daily = firstNonEmpty(dailyKeywords, 1, 12)
+        val guess = firstNonEmpty(guessKeywords, 1, 12)
         HomeData(
             dailyRecommend = daily,
             guessYouLike = guess,
             recommendPlaylists = tryPlaylists()
         )
     }.getOrDefault(HomeData())
+
+    /** Try each keyword until a non-empty result is found (guards against a dead keyword). */
+    private suspend fun firstNonEmpty(keywords: List<String>, pn: Int, rn: Int): List<Song> {
+        val list = keywords.shuffled()
+        for (kw in list) {
+            val r = api.searchSongs(kw, pn, rn)
+            if (r.isNotEmpty()) return r
+        }
+        return emptyList()
+    }
 
     private suspend fun tryPlaylists(): List<FavoritePlaylist> {
         val out = ArrayList<FavoritePlaylist>()

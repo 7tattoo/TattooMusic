@@ -29,8 +29,20 @@ import java.util.concurrent.TimeUnit
  */
 class KuwoApi(
     private val json: Json = Json { ignoreUnknownKeys = true },
-    private val client: OkHttpClient = defaultClient
+    private val client: OkHttpClient = defaultClient,
+    private val logFile: java.io.File? = null
 ) {
+
+    /** Write a line to the network diagnostic log (app external files dir). */
+    private fun logNet(tag: String, msg: String) {
+        val f = logFile ?: return
+        runCatching {
+            f.parentFile?.mkdirs()
+            f.appendText(
+                "${java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())} [$tag] $msg\n"
+            )
+        }
+    }
 
     /** In-memory cookie store so a warmup visit persists the live session. */
     private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
@@ -178,23 +190,45 @@ class KuwoApi(
             val url = "http://search.kuwo.cn/r.s" +
                 "?all=${urlEncode(keyword)}&ft=music&itemset=web_2013&client=kt" +
                 "&pn=${(pn - 1).coerceAtLeast(0)}&rn=$rn&rformat=json&encoding=utf8"
-            val root = runCatching {
-                val body = client.newCall(
+            var httpCode = -1
+            var bodyLen = -1
+            var reason = "parse_error"
+            val songs = try {
+                val resp = client.newCall(
                     Request.Builder().url(url)
                         .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
+                        .header("Accept", "application/json,text/plain,*/*")
                         .build()
-                ).execute().use { it.body?.string() }
-                val clean = body?.let { b ->
-                    // search.kuwo.cn returns JSON with single-quoted keys/values,
-                    // which the standard parser rejects. Convert to legal JSON.
-                    if (b.contains('\'')) sanitizeSingleQuotes(b) else b
-                } ?: "{}"
-                json.parseToJsonElement(clean)
-            }.getOrNull()
-            val arr = root?.j("abslist") ?: return@withContext emptyList()
-            val out = ArrayList<Song>()
-            for (item in arr.arrayOrList) songFromMobile(item)?.let(out::add)
-            out
+                ).execute()
+                httpCode = resp.code
+                resp.use {
+                    val body = it.body?.string()
+                    bodyLen = body?.length ?: -1
+                    if (body.isNullOrBlank()) {
+                        reason = "empty_body(HTTP $httpCode)"
+                        emptyList()
+                    } else {
+                        // search.kuwo.cn returns JSON with single-quoted keys/values,
+                        // which the standard parser rejects. Convert to legal JSON.
+                        val clean = if (body.contains('\'')) sanitizeSingleQuotes(body) else body
+                        val root = runCatching { json.parseToJsonElement(clean) }
+                            .getOrElse { e -> reason = "parse_fail:${e.message}"; null }
+                        val arr = root?.j("abslist")
+                        if (arr == null) { reason = "no_abslist"; emptyList() }
+                        else {
+                            val out = ArrayList<Song>()
+                            for (item in arr.arrayOrList) songFromMobile(item)?.let(out::add)
+                            reason = "ok(${out.size})"
+                            out
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                reason = "exception:${e.javaClass.simpleName}:${e.message}"
+                emptyList()
+            }
+            logNet("SEARCH", "kw=$keyword http=$httpCode len=$bodyLen $reason url=$url")
+            songs
         }
 
     private fun songFromMobile(o: JsonElement): Song? {
@@ -217,6 +251,7 @@ class KuwoApi(
     suspend fun getPlayUrl(mid: String, br: String = "128kmp3"): String? {
         // Prefer the secret-free antiserver endpoint.
         mobilePlayUrl(mid)?.let { return it }
+        logNet("PLAY", "antiserver failed mid=$mid, falling back to www")
         // Fall back to the legacy www api (requires Secret; often unavailable).
         val el = get("/api/v1/www/music/playUrl?mid=$mid&type=music&httpsStatus=1&plat=web_www&from=&br=$br")
             ?: return null
@@ -233,15 +268,17 @@ class KuwoApi(
     private suspend fun mobilePlayUrl(mid: String): String? = withContext(Dispatchers.IO) {
         val rid = if (mid.startsWith("MUSIC_")) mid else "MUSIC_$mid"
         val url = "http://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=$rid&response=url&format=mp3&br=128kmp3&apiversion=3"
-        runCatching {
+        val out = runCatching {
             val body = client.newCall(
                 Request.Builder().url(url)
                     .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                     .build()
             ).execute().use { it.body?.string() }
-            val root = json.parseToJsonElement(body ?: "{}")
-            root.str("url")?.takeIf { it.startsWith("http") }
+            val root = runCatching { json.parseToJsonElement(body ?: "{}") }.getOrNull()
+            root?.str("url")?.takeIf { it.startsWith("http") }
         }.getOrNull()
+        logNet("PLAYURL", "mid=$rid -> ${if (out == null) "FAIL" else "ok"}")
+        out
     }
 
     /** Fetch standard LRC lyrics (new h5 endpoint, stable & public). */
@@ -253,7 +290,9 @@ class KuwoApi(
         if (raw.isNullOrBlank() && overrideCookie != null) {
             raw = fetchLrc(url, "")
         }
-        return parseLrcJson(raw ?: return emptyList())
+        val lines = parseLrcJson(raw ?: return emptyList())
+        logNet("LYRICS", "mid=$musicId -> ${lines.size} lines, raw=${raw?.length ?: -1}b")
+        return lines
     }
 
     private fun fetchLrc(url: String, cookie: String): String? =
