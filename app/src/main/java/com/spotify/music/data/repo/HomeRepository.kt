@@ -12,24 +12,34 @@ data class HomeData(
 )
 
 /**
- * Builds the 首页 data (每日推荐 / 猜你喜欢 / 推荐歌单) from kuwo endpoints.
- * Falls back gracefully when a source is empty.
+ * Builds the 首页 data. The www.kuwo.cn web API is Secret-gated and frequently
+ * rejects clients, so the home feed is built from the public, secret-free
+ * mobile search endpoint (search.kuwo.cn) which reliably returns songs. The
+ * 推荐歌单 row uses synthesized "kw:<keyword>" playlists that resolve to a
+ * search on tap, so the home page is never left blank.
  */
 class HomeRepository(private val api: KuwoApi) {
 
+    private val dailyKeywords = listOf("热门歌曲", "热搜", "新歌", "华语")
+    private val guessKeywords = listOf("经典老歌", "流行", "DJ舞曲", "伤感")
+    private val playlistThemes = listOf("华语流行", "经典老歌", "DJ舞曲", "英文金曲", "网络热歌", "轻音乐")
+
     suspend fun load(): HomeData = runCatching {
-        val playlists = safePlaylists()
-        val bangIds = safeBangIds()
-        val daily = bangIds.getOrNull(0)?.let { api.rankMusic(it, 1, 20) }
-            ?: api.searchSongs("华语", 1, 20)
-        val guess = bangIds.getOrNull(1)?.let { api.rankMusic(it, 1, 20) }
-            ?: api.searchSongs("经典", 1, 20)
-        HomeData(daily, guess, playlists)
+        val daily = api.searchSongs(dailyKeywords.random(), 1, 12)
+        val guess = api.searchSongs(guessKeywords.random(), 1, 12)
+        HomeData(
+            dailyRecommend = daily,
+            guessYouLike = guess,
+            recommendPlaylists = tryPlaylists()
+        )
     }.getOrDefault(HomeData())
 
-    private suspend fun safePlaylists(): List<FavoritePlaylist> =
-        runCatching { api.recPlaylists(1, 12) }.getOrDefault(emptyList())
-
-    private suspend fun safeBangIds(): List<String> =
-        runCatching { api.recBangList().map { it.id } }.getOrDefault(emptyList())
+    private suspend fun tryPlaylists(): List<FavoritePlaylist> {
+        val out = ArrayList<FavoritePlaylist>()
+        for (t in playlistThemes.shuffled().take(6)) {
+            val n = api.searchSongs(t, 1, 5).size
+            out.add(FavoritePlaylist("kw:$t", "$t 精选", null, (n * 1000).toLong()))
+        }
+        return out
+    }
 }

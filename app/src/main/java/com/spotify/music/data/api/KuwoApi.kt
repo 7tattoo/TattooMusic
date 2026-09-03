@@ -164,20 +164,63 @@ class KuwoApi(
         }
     }
 
-    /** Search songs by keyword. */
-    suspend fun searchSongs(keyword: String, pn: Int = 1, rn: Int = 30): List<Song> {
-        val enc = keyword // OkHttp url will encode via HttpUrl below if needed
-        val el = get("/api/www/search/searchMusicBykeyWord?key=${urlEncode(enc)}&pn=$pn&rn=$rn&httpsStatus=1")
-            ?: return emptyList()
-        return extractSongs(el)
+    /** Search songs by keyword (secret-free mobile endpoint). */
+    suspend fun searchSongs(keyword: String, pn: Int = 1, rn: Int = 30): List<Song> =
+        mobileSearchSongs(keyword, pn, rn)
+
+    /**
+     * Search via http://search.kuwo.cn/r.s (web_2013 mobile interface).
+     * This endpoint is public and requires no Secret/cookie, unlike the locked
+     * www.kuwo.cn API, so search & the home feed work reliably.
+     */
+    private suspend fun mobileSearchSongs(keyword: String, pn: Int, rn: Int): List<Song> =
+        withContext(Dispatchers.IO) {
+            val url = "http://search.kuwo.cn/r.s" +
+                "?all=${urlEncode(keyword)}&ft=music&itemset=web_2013&client=kt" +
+                "&pn=${(pn - 1).coerceAtLeast(0)}&rn=$rn&rformat=json&encoding=utf8"
+            val root = runCatching {
+                val body = client.newCall(
+                    Request.Builder().url(url)
+                        .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
+                        .build()
+                ).execute().use { it.body?.string() }
+                val clean = body?.let { b ->
+                    // search.kuwo.cn returns JSON with single-quoted keys/values,
+                    // which the standard parser rejects. Convert to legal JSON.
+                    if (b.contains('\'')) sanitizeSingleQuotes(b) else b
+                } ?: "{}"
+                json.parseToJsonElement(clean)
+            }.getOrNull()
+            val arr = root?.j("abslist") ?: return@withContext emptyList()
+            val out = ArrayList<Song>()
+            for (item in arr.arrayOrList) songFromMobile(item)?.let(out::add)
+            out
+        }
+
+    private fun songFromMobile(o: JsonElement): Song? {
+        val id = o.str("DC_TARGETID") ?: return null
+        val title = (o.str("NAME") ?: o.str("SONGNAME"))
+            ?.replace("&nbsp;", " ")?.trim() ?: return null
+        val artist = o.str("ARTIST") ?: "未知歌手"
+        val album = o.str("ALBUM")?.takeIf { it.isNotBlank() }
+        val durSec = o.long("DURATION") ?: 0L
+        return Song(
+            id = id,
+            title = title,
+            artist = artist,
+            album = album,
+            durationMs = durSec * 1000
+        )
     }
 
-    /** Resolve the playable stream URL for a song id and bitrate. */
+    /** Resolve the playable stream URL for a song id. */
     suspend fun getPlayUrl(mid: String, br: String = "128kmp3"): String? {
+        // Prefer the secret-free antiserver endpoint.
+        mobilePlayUrl(mid)?.let { return it }
+        // Fall back to the legacy www api (requires Secret; often unavailable).
         val el = get("/api/v1/www/music/playUrl?mid=$mid&type=music&httpsStatus=1&plat=web_www&from=&br=$br")
             ?: return null
         val data = el.j("data") ?: return null
-        // v1 returns data.url for the requested br, or an array of quality objects.
         val direct = data.str("url")
         if (!direct.isNullOrEmpty() && direct.startsWith("http")) return direct
         data.arrayOfObjects()?.forEach { q ->
@@ -185,6 +228,20 @@ class KuwoApi(
             if (!u.isNullOrEmpty() && u.startsWith("http")) return u
         }
         return null
+    }
+
+    private suspend fun mobilePlayUrl(mid: String): String? = withContext(Dispatchers.IO) {
+        val rid = if (mid.startsWith("MUSIC_")) mid else "MUSIC_$mid"
+        val url = "http://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=$rid&response=url&format=mp3&br=128kmp3&apiversion=3"
+        runCatching {
+            val body = client.newCall(
+                Request.Builder().url(url)
+                    .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
+                    .build()
+            ).execute().use { it.body?.string() }
+            val root = json.parseToJsonElement(body ?: "{}")
+            root.str("url")?.takeIf { it.startsWith("http") }
+        }.getOrNull()
     }
 
     /** Fetch standard LRC lyrics (new h5 endpoint, stable & public). */
@@ -282,8 +339,11 @@ class KuwoApi(
         return extractSongs(el)
     }
 
-    /** Songs inside a playlist (歌单). */
+    /** Songs inside a playlist (歌单). Supports "kw:<keyword>" playlists. */
     suspend fun playlistSongs(pid: String, pn: Int = 1, rn: Int = 99): List<Song> {
+        if (pid.startsWith("kw:")) {
+            return mobileSearchSongs(pid.removePrefix("kw:"), 1, 40)
+        }
         val el = get("/api/www/playlist/playListInfo?pid=${urlEncode(pid)}&pn=$pn&rn=$rn&httpsStatus=1")
             ?: return emptyList()
         return extractSongs(el)
@@ -428,3 +488,46 @@ private val JsonElement.arrayOrList: List<JsonElement>
 
 private fun JsonElement.arrayOfObjects(): List<JsonElement>? =
     (this as? kotlinx.serialization.json.JsonArray)?.toList()
+
+/**
+ * Convert single-quoted JSON (as returned by the public search.kuwo.cn
+ * interface) into valid double-quoted JSON. Handles `\'` and `\"` escapes
+ * inside strings and leaves already double-quoted sections untouched, so it
+ * is safe even if an upstream response mixes quote styles.
+ */
+internal fun sanitizeSingleQuotes(s: String): String {
+    if (s.isEmpty()) return s
+    val out = StringBuilder(s.length + 8)
+    var inSingle = false
+    var inDouble = false
+    var i = 0
+    val n = s.length
+    while (i < n) {
+        val c = s[i]
+        when {
+            c == '\\' && i + 1 < n -> {
+                val nxt = s[i + 1]
+                when {
+                    inDouble -> { out.append(c).append(nxt) }        // preserve both
+                    inSingle && nxt == '\'' -> { out.append('\''); i++ } // \' -> '
+                    inSingle && nxt == '"' -> { out.append(c).append('"'); i++ } // \" stays
+                    else -> { out.append(c).append(nxt); i++ }
+                }
+            }
+            inSingle -> {
+                if (c == '\'') { out.append('"'); inSingle = false }
+                else if (c == '"') { out.append("\\\"") }
+                else out.append(c)
+            }
+            inDouble -> {
+                if (c == '"') { out.append(c); inDouble = false }
+                else out.append(c)
+            }
+            c == '\'' -> { out.append('"'); inSingle = true }
+            c == '"' -> { out.append(c); inDouble = true }
+            else -> out.append(c)
+        }
+        i++
+    }
+    return out.toString()
+}
