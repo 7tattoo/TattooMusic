@@ -56,9 +56,6 @@ class KuwoApi(
     @Volatile
     private var sessionReady = false
 
-    @Volatile
-    private var liveSecret: String? = null
-
     // ---- account (cookie-based login) overrides ----
     @Volatile
     private var overrideCookie: String? = null
@@ -80,13 +77,41 @@ class KuwoApi(
         sessionReady = false
     }
 
-    /** Cookie to send on every request: logged-in cookie wins over the default. */
-    private fun currentCookie(): String = overrideCookie ?: KuwoSecret.COOKIE
+    /**
+     * A consistent (cookie, secret) pair for the anonymous session. Preference
+     * is the live pair captured during the warmup visit; otherwise the static
+     * default pair. The Secret is ALWAYS derived from the same Hm_Iuvt token
+     * that is actually sent in the Cookie header -- mixing a live secret with
+     * the static cookie makes Kuwo reject the request ("The request is illegal!").
+     */
+    private fun anonymousPair(): Pair<String, String> {
+        val live = cookieStore["www.kuwo.cn"]
+        val liveSecret = live
+            ?.firstOrNull { it.name.startsWith("Hm_Iuvt_") && it.value.isNotBlank() }
+            ?.let { KuwoSecret.secretFor(it.name, it.value) }
+        if (liveSecret != null && !live.isNullOrEmpty()) {
+            val cookieStr = live.joinToString("; ") { "${it.name}=${it.value}" }
+            return cookieStr to liveSecret
+        }
+        return KuwoSecret.COOKIE to KuwoSecret.secret
+    }
+
+    /** Cookie to send on every request: logged-in cookie wins over anonymous. */
+    private fun currentCookie(): String = overrideCookie ?: anonymousPair().first
 
     /**
-     * Warm up a kuwo session: visiting the homepage returns a live
-     * `Hm_Iuvt_...` token that the Secret header must be derived from.
-     * With it we compute a live Secret; otherwise fall back to the static one.
+     * Secret matching the cookie actually sent: derived from the logged-in
+     * token when present, otherwise from the anonymous pair. Never mixed.
+     */
+    private fun currentSecret(): String = when {
+        overrideSecret != null -> overrideSecret!!
+        else -> anonymousPair().second
+    }
+
+    /**
+     * Warm up a kuwo session by visiting the homepage. This populates the
+     * cookie store with a live `Hm_Iuvt_...` anti-bot token whose value the
+     * `anonymousPair()` Secret is derived from.
      */
     private suspend fun ensureSession() {
         if (sessionReady) return
@@ -98,43 +123,23 @@ class KuwoApi(
                         .build()
                 ).execute().use { it.body?.close() }
             }
-            liveSecret = cookieStore["www.kuwo.cn"]
-                ?.firstOrNull { it.name.startsWith("Hm_Iuvt_") && it.value.isNotBlank() }
-                ?.let { KuwoSecret.secretFor(it.name, it.value) }
-                ?: KuwoSecret.secret
             sessionReady = true
         }
     }
 
-    /**
-     * Secret for the outgoing request. Kuwo derives it from the `Hm_Iuvt_...`
-     * anti-bot token; it must be computed from the SAME token that is actually
-     * sent in the Cookie header. When a logged-in cookie is present we always
-     * derive the Secret from its embedded token (even if the cookie was set
-     * later than login, e.g. after a page reload), so requests never mismatch
-     * the session and the home feed stays populated after a web login.
-     */
-    private fun currentSecret(): String {
-        overrideCookie?.let { c ->
-            val m = Regex("(Hm_Iuvt_[A-Za-z0-9]+)=([^;]+)").find(c)
-            val v = m?.groupValues?.getOrNull(2)?.trim()
-            if (m != null && !v.isNullOrBlank()) {
-                val computed = KuwoSecret.secretFor(m.groupValues[1], v)
-                if (computed != null) return computed
-            }
-        }
-        return liveSecret ?: KuwoSecret.secret
-    }
-
     private suspend fun get(path: String, referer: String? = null): JsonElement? = withContext(Dispatchers.IO) {
         ensureSession()
-        val direct = tryGet(path, referer, currentCookie(), currentSecret())
+        // Public feeds always go out with the stable anonymous pair first so the
+        // home/search/rank screens are never blank, even when a logged-in cookie
+        // is stale/expired or rejected by Kuwo.
+        val anon = anonymousPair()
+        val direct = tryGet(path, referer, anon.first, anon.second)
         if (direct != null) return@withContext direct
-        // If a logged-in cookie is set but yields nothing (stale/expired token,
-        // server-side reject), gracefully fall back to the anonymous session so
-        // the home/browse feeds are never left blank after a web login.
+        // If the account session is present and the anonymous attempt failed,
+        // tentatively try it. (overrideCookie + overrideSecret are derived from
+        // the same token, so they always match.)
         if (overrideCookie != null) {
-            return@withContext tryGet(path, referer, KuwoSecret.COOKIE, liveSecret ?: KuwoSecret.secret)
+            return@withContext tryGet(path, referer, overrideCookie!!, overrideSecret ?: anon.second)
         }
         null
     }
@@ -185,10 +190,11 @@ class KuwoApi(
     /** Fetch standard LRC lyrics (new h5 endpoint, stable & public). */
     suspend fun getLyrics(musicId: String): List<LyricLine> {
         val url = "https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${urlEncode(musicId)}&httpsStatus=1"
-        val cookie = currentCookie()
-        var raw = fetchLrc(url, cookie)
-        if (raw == null && overrideCookie != null) {
-            raw = fetchLrc(url, KuwoSecret.COOKIE)
+        // m.kuwo.cn is cookie-independent; sending a logged-in account cookie can
+        // make it return an empty lrclist, so use a neutral cookie here.
+        var raw = fetchLrc(url, KuwoSecret.COOKIE)
+        if (raw.isNullOrBlank() && overrideCookie != null) {
+            raw = fetchLrc(url, "")
         }
         return parseLrcJson(raw ?: return emptyList())
     }
@@ -212,13 +218,27 @@ class KuwoApi(
         for (item in lrclist.arrayOrList) {
             val t = item.str("time") ?: continue
             val text = item.str("lineLyric") ?: continue
-            val m = timeRegex.find(t) ?: continue
+            val timeMs = parseKuwolrcTime(t, timeRegex) ?: continue
+            out.add(LyricLine(timeMs, text.trim()))
+        }
+        return out.sortedBy { it.timeMs }
+    }
+
+    /**
+     * Kuwo's h5 lrc endpoint returns `time` either as mm:ss(.cc) or as plain
+     * decimal seconds ("0.0", "1.5", "23.999"). Handle both so no line is
+     * silently dropped (which previously made every song show "no lyrics").
+     */
+    private fun parseKuwolrcTime(t: String, r: Regex): Long? {
+        val m = r.find(t)
+        if (m != null) {
             val mm = m.groupValues[1].toLongOrNull() ?: 0L
             val ss = m.groupValues[2].toLongOrNull() ?: 0L
             val frac = m.groupValues[3].takeIf { it.isNotBlank() }?.let { (it + "00").take(3).toLongOrNull() } ?: 0L
-            out.add(LyricLine(mm * 60_000 + ss * 1000 + frac, text.trim()))
+            return mm * 60_000 + ss * 1000 + frac
         }
-        return out.sortedBy { it.timeMs }
+        val secs = t.toDoubleOrNull()
+        return if (secs != null) (secs * 1000).toLong() else null
     }
 
     /** Recommended playlists (推荐歌单). */

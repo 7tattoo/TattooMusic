@@ -276,7 +276,11 @@ class PlayerController(
 
     private fun startForegroundPlayback() {
         runCatching {
-            context.startForegroundService(Intent(context, PlayerService::class.java))
+            // Plain startService: the service promotes itself to foreground in
+            // onCreate/onStartCommand. This avoids the hard 5-second window imposed
+            // by startForegroundService() (ForegroundServiceDidNotStartInTime
+            // Exception) when the main thread is briefly busy at playback start.
+            context.startService(Intent(context, PlayerService::class.java))
         }
     }
 

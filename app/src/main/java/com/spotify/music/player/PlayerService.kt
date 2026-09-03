@@ -28,6 +28,9 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Promote ASAP so that even a startService/startForegroundService path
+        // is answered well inside the system's 5s window.
+        promoteToForeground()
         val player = App.container(this).playerController.exoPlayer
         // default session keeps notification + focus working out of the box
         mediaSession = MediaSession.Builder(this, player).build()
@@ -51,8 +54,17 @@ class PlayerService : MediaSessionService() {
     /** Always attempt to put the service into foreground; never throws. */
     private fun promoteToForeground() {
         if (Build.VERSION.SDK_INT < 26) return
-        runCatching {
+        val ok = runCatching {
             startForeground(NOTIFICATION_ID, placeholderNotification())
+        }.isSuccess
+        if (!ok) {
+            // Record the real cause so a repeat isn't masked as a generic
+            // system timeout next time the user reports a crash.
+            runCatching {
+                val f = java.io.File(filesDir, "fgs_error.txt")
+                f.appendText("${java.util.Date()} startForeground failed:\n" +
+                    Thread.currentThread().stackTrace.joinToString("\n") { it.toString() } + "\n\n")
+            }
         }
     }
 
