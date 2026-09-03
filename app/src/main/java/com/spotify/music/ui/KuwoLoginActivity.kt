@@ -1,9 +1,11 @@
 package com.spotify.music.ui
 
 import android.app.Activity
+import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -71,6 +73,20 @@ class KuwoLoginActivity : Activity() {
             addView(hint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
+
+        // Push the custom top bar below the system status bar / notification bar
+        // so the "完成登录 / 取消" buttons are never hidden behind it.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val top = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                insets.getInsets(WindowInsets.Type.systemBars()).top
+            } else {
+                @Suppress("DEPRECATION")
+                insets.systemWindowInsetTop
+            }
+            topBar.setPadding(0, top, 0, 0)
+            insets
+        }
+        root.requestApplyInsets()
         setContentView(root)
     }
 

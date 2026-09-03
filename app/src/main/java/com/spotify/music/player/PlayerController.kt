@@ -157,15 +157,22 @@ class PlayerController(
         _currentSong.value = song
         loadLyrics(song)
         scope.launch {
-            val mediaItem = resolveMediaItem(song) ?: run {
-                _events.tryEmit("暂时无法获取该歌曲的播放地址")
+            runCatching {
+                val mediaItem = resolveMediaItem(song)
+                if (mediaItem == null) {
+                    _events.tryEmit("暂时无法获取该歌曲的播放地址")
+                    _busy.value = PlayerBusy.ERROR
+                    _error.value = if (song.source == SongSource.LOCAL) "无法读取本地文件" else "获取播放地址失败"
+                    return@launch
+                }
+                _durationMs.value = if (song.durationMs > 0) song.durationMs else exoPlayer.duration
+                exoPlayer.setMediaItem(mediaItem, positionMs)
+                exoPlayer.prepare()
+                exoPlayer.play()
+            }.onFailure { e ->
                 _busy.value = PlayerBusy.ERROR
-                return@launch
+                _error.value = e.localizedMessage ?: "播放失败"
             }
-            _durationMs.value = if (song.durationMs > 0) song.durationMs else exoPlayer.duration
-            exoPlayer.setMediaItem(mediaItem, positionMs)
-            exoPlayer.prepare()
-            exoPlayer.play()
         }
     }
 
@@ -177,22 +184,30 @@ class PlayerController(
         loadLyrics(songs[clipped])
         playbackBegin(songs.size)
         scope.launch {
-            val items = mutableListOf<MediaItem>()
-            for ((index, song) in songs.withIndex()) {
-                val item = resolveMediaItem(song)
-                if (item != null) items.add(item)
-                // start as soon as the target index is available to reduce wait
-                if (index == clipped && item != null) {
-                    exoPlayer.setMediaItems(items.toList(), indexOfInFilled(items, song, clipped), 0L)
-                    exoPlayer.prepare()
-                    exoPlayer.play()
+            runCatching {
+                val items = ArrayList<MediaItem>()
+                for (song in songs) {
+                    resolveMediaItem(song)?.let { items.add(it) }
                 }
-            }
-            if (items.isNotEmpty() && exoPlayer.mediaItemCount == 0) {
-                exoPlayer.setMediaItems(items)
-                exoPlayer.seekToDefaultPosition()
+                if (items.isEmpty()) {
+                    _busy.value = PlayerBusy.ERROR
+                    _error.value = "无法加载音频文件"
+                    return@launch
+                }
+                // locate the requested start song inside the resolved (non-null) items
+                var start = clipped.coerceIn(0, items.lastIndex)
+                for (i in items.indices) {
+                    if (items[i].localConfiguration?.tag == songs[clipped]) {
+                        start = i
+                        break
+                    }
+                }
+                exoPlayer.setMediaItems(items, start, 0L)
                 exoPlayer.prepare()
                 exoPlayer.play()
+            }.onFailure { e ->
+                _busy.value = PlayerBusy.ERROR
+                _error.value = e.localizedMessage ?: "播放失败"
             }
         }
     }
@@ -302,7 +317,10 @@ class PlayerController(
     /** Resolve a MediaItem (stream URL for online, file URI for local). */
     private suspend fun resolveMediaItem(song: Song): MediaItem? {
         val uri = when (song.source) {
-            SongSource.LOCAL -> song.localPath?.let { Uri.fromFile(File(it)) }
+            SongSource.LOCAL -> {
+                val p = song.localPath
+                if (p.isNullOrBlank() || !File(p).isFile) null else Uri.fromFile(File(p))
+            }
             SongSource.ONLINE -> {
                 val cached = urlCache[song.id]
                 if (cached != null) Uri.parse(cached)
@@ -327,7 +345,15 @@ class PlayerController(
                     .setTitle(song.title)
                     .setArtist(song.artist)
                     .setAlbumTitle(song.album)
-                    .setArtworkUri(song.pic?.let { Uri.parse(it) })
+                    .setArtworkUri(
+                        // Only use remote artwork in media metadata. Local
+                        // content:// albumart can't always be resolved by the
+                        // media session / notification thread and may crash the
+                        // app; the in-app UI loads album art separately.
+                        if (song.source == SongSource.ONLINE)
+                            song.pic?.let { Uri.parse(it) }
+                        else null
+                    )
                     .build()
             )
             .build()
@@ -358,11 +384,4 @@ class PlayerController(
         }
     }
 
-    /** index within the resolved items where the target song sits. */
-    private fun indexOfInFilled(items: List<MediaItem>, target: Song, fallback: Int): Int {
-        for (i in items.indices) {
-            if (items[i].localConfiguration?.tag == target) return i
-        }
-        return fallback
-    }
 }
