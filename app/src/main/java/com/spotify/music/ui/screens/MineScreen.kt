@@ -337,7 +337,15 @@ private fun KuwoLoginDialog(container: AppContainer, onDismiss: () -> Unit) {
         title = { Text("登录酷我账号") },
         text = {
             Column {
-                Text("在电脑浏览器打开 https://www.kuwo.cn 并登录，按下 F12 打开开发者工具 → 应用/Application → Cookies，复制全部 Cookie 值粘贴到下面（保留 Hm_Iuvt_ 开头的令牌）。",
+                TextButton(onClick = {
+                    context.startActivity(android.content.Intent(context, com.spotify.music.ui.KuwoLoginActivity::class.java))
+                    onDismiss()
+                }) {
+                    Text("🌐 使用内置浏览器直接登录（免复制 Cookie）")
+                }
+                androidx.compose.material3.HorizontalDivider()
+                Spacer(Modifier.height(6.dp))
+                Text("或粘贴网页端 Cookie：在电脑浏览器打开 https://www.kuwo.cn 并登录，按下 F12 → 应用/Application → Cookies，复制全部 Cookie 值粘贴到下面（保留 Hm_Iuvt_ 开头的令牌）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))

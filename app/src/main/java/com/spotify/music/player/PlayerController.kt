@@ -7,6 +7,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import com.spotify.music.data.api.KuwoApi
 import com.spotify.music.data.model.LyricLine
@@ -47,7 +48,12 @@ class PlayerController(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context).build()
+    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
+        // Some SoC FLAC decoders don't support high-resolution/unsupported track
+        // specs; enabling decoder fallback lets ExoPlayer back off to another
+        // decoder instead of crashing the app on FLAC playback.
+        .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+        .build()
 
     private val _currentSong = MutableStateFlow<Song?>(null)
     val currentSong: StateFlow<Song?> = _currentSong.asStateFlow()

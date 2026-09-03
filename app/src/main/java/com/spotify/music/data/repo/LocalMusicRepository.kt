@@ -58,11 +58,11 @@ class LocalMusicRepository(
         _isScanning.value = true
         try {
             val ignored = settings.ignoredDirs.value.map { it.trimEnd('/') }
-            val root = settings.musicRoot.value?.trimEnd('/')
+            val roots = settings.musicRoots.value.map { it.trimEnd('/') }
             val list = ArrayList<Song>()
             if (canScanByFileSystem()) {
                 val meta = loadMediaStoreMeta()
-                for (dir in scanRoots(root)) {
+                for (dir in scanRoots(roots)) {
                     for (f in dir.walkTopDown()) {
                         if (!f.isFile) continue
                         if (f.extension.lowercase() !in supportedExt) continue
@@ -73,7 +73,7 @@ class LocalMusicRepository(
                     }
                 }
             } else {
-                scanViaMediaStore(list, ignored, root)
+                scanViaMediaStore(list, ignored, roots)
             }
             _songs.value = list
         } finally {
@@ -81,12 +81,10 @@ class LocalMusicRepository(
         }
     }
 
-    /** Directories to walk: configured root, else the whole external storage. */
-    private fun scanRoots(root: String?): List<File> {
-        if (!root.isNullOrBlank()) {
-            val f = File(root)
-            return if (f.isDirectory) listOf(f) else emptyList()
-        }
+    /** Directories to walk: configured roots, else the whole external storage. */
+    private fun scanRoots(roots: List<String>): List<File> {
+        val configured = roots.mapNotNull { File(it).takeIf { d -> d.isDirectory } }
+        if (configured.isNotEmpty()) return configured
         return Environment.getExternalStorageDirectory()
             .takeIf { it.isDirectory }?.let { listOf(it) } ?: emptyList()
     }
@@ -150,8 +148,8 @@ class LocalMusicRepository(
     }
 
     /** Legacy MediaStore-only scan (used when file-system access is unavailable). */
-    private fun scanViaMediaStore(list: ArrayList<Song>, ignored: List<String>, rootFilter: String?) {
-        val rootEnabled = !rootFilter.isNullOrBlank()
+    private fun scanViaMediaStore(list: ArrayList<Song>, ignored: List<String>, roots: List<String>) {
+        val rootEnabled = roots.isNotEmpty()
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.TITLE,
@@ -177,7 +175,7 @@ class LocalMusicRepository(
                     val data = cursor.getString(dataC) ?: continue
                     val pathFile = File(data)
                     if (pathFile.extension.lowercase() !in supportedExt) continue
-                    if (rootEnabled && !data.startsWith(rootFilter!!)) continue
+                    if (rootEnabled && !roots.any { data.startsWith(it) }) continue
                     if (ignored.any { data.startsWith(it) }) continue
                     val artUri = if (albumIdC >= 0) {
                         ContentUris.withAppendedId(

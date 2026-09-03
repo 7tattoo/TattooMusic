@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -64,6 +65,7 @@ fun LocalScreen(
     val isScanning by container.localMusicRepository.isScanning.collectAsState()
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
+    var showDirs by remember { mutableStateOf(false) }
 
     val audioPermission = container.localMusicRepository.requiredAudioPermission()
 
@@ -96,9 +98,12 @@ fun LocalScreen(
                 )
             }
             val path = treeUriToPath(uri)
-            container.settings.setMusicRoot(path)
-            if (container.localMusicRepository.canScanByFileSystem()) {
-                scope.launch { container.localMusicRepository.scan() }
+            if (path != null) {
+                container.settings.addMusicRoot(path)
+                Toast.makeText(context, "已添加音乐目录 $path", Toast.LENGTH_LONG).show()
+                if (container.localMusicRepository.canScanByFileSystem()) {
+                    scope.launch { container.localMusicRepository.scan() }
+                }
             }
         }
     }
@@ -152,9 +157,14 @@ fun LocalScreen(
                         onClick = { menuOpen = false; performScan() }
                     )
                     DropdownMenuItem(
-                        text = { Text("选择音乐目录") },
+                        text = { Text("添加音乐目录") },
                         leadingIcon = { Icon(Icons.Rounded.FolderOpen, contentDescription = null) },
                         onClick = { menuOpen = false; dirPicker.launch(null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("管理音乐目录") },
+                        leadingIcon = { Icon(Icons.Rounded.FolderOpen, contentDescription = null) },
+                        onClick = { menuOpen = false; showDirs = true }
                     )
                     DropdownMenuItem(
                         text = { Text("管理文件权限") },
@@ -166,18 +176,21 @@ fun LocalScreen(
         }
 
         if (songs.isEmpty()) {
+            val roots by container.settings.musicRoots.collectAsState()
             Box(Modifier.fillMaxSize()) {
                 Column(
                     Modifier.padding(24.dp).align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    EmptyState(Icons.Rounded.MusicOff, "还没有本地音乐", "点击右上角「⋮」扫描音乐或选择音乐目录")
-                    container.settings.musicRoot.collectAsState().value?.let { root ->
+                    EmptyState(Icons.Rounded.MusicOff, "还没有本地音乐", "点击右上角「⋮」扫描音乐或添加音乐目录")
+                    if (roots.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
-                        Text("当前目录：$root", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 12.dp))
+                        Text(
+                            "已添加 ${roots.size} 个目录，可再添加更多",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -189,6 +202,63 @@ fun LocalScreen(
                         onOpenPlayer()
                     })
                 }
+            }
+        }
+    }
+
+    if (showDirs) {
+        MusicDirDialog(container) { showDirs = false }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun MusicDirDialog(container: AppContainer, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val roots by container.settings.musicRoots.collectAsState()
+    val scope = rememberCoroutineScope()
+    val addDir = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            val path = treeUriToPath(uri)
+            if (path != null) {
+                container.settings.addMusicRoot(path)
+                if (container.localMusicRepository.canScanByFileSystem()) {
+                    scope.launch { container.localMusicRepository.scan() }
+                }
+            }
+        }
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)) {
+            Text("音乐目录（可多个）", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text("总目录下所有音频都会被扫描，可添加多个目录同时管理",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            androidx.compose.material3.HorizontalDivider()
+            if (roots.isEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("尚未添加目录，扫描将覆盖整个存储", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                roots.forEach { r ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(r, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        androidx.compose.material3.TextButton(onClick = {
+                            container.settings.removeMusicRoot(r)
+                            if (container.localMusicRepository.canScanByFileSystem()) {
+                                scope.launch { container.localMusicRepository.scan() }
+                            }
+                        }) { Text("移除") }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            androidx.compose.material3.OutlinedButton(onClick = { addDir.launch(null) }, modifier = Modifier.fillMaxWidth()) {
+                androidx.compose.material3.Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("添加目录")
             }
         }
     }

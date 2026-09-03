@@ -26,11 +26,19 @@ class AppSettings(context: Context) {
         ignoredDirs.value = cur.toSet()
     }
 
-    // ---- music root dir filter (scan only a chosen directory) ----
-    val musicRoot = MutableStateFlow(prefs.getString("music_root", null))
-    fun setMusicRoot(path: String?) {
-        prefs.edit().putString("music_root", path).apply()
-        musicRoot.value = path
+    // ---- music root dirs (scan only the chosen directories; supports multiple) ----
+    val musicRoots = MutableStateFlow<List<String>>(prefs.getStringSet("music_roots", emptySet())?.toList() ?: emptyList())
+    fun setMusicRoots(paths: List<String>) {
+        prefs.edit().putStringSet("music_roots", paths.toSet()).apply()
+        musicRoots.value = paths
+    }
+    fun addMusicRoot(path: String) {
+        val cur = musicRoots.value.toMutableList()
+        if (path !in cur) cur.add(path)
+        setMusicRoots(cur)
+    }
+    fun removeMusicRoot(path: String) {
+        setMusicRoots(musicRoots.value.filter { it != path })
     }
 
     // ---- usb exclusive ----
