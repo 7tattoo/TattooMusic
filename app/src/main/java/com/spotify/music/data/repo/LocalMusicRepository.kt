@@ -2,8 +2,13 @@ package com.spotify.music.data.repo
 
 import android.content.ContentUris
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import com.spotify.music.data.AppSettings
 import com.spotify.music.data.model.Song
 import com.spotify.music.data.model.SongSource
@@ -15,13 +20,18 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Scans the device media store for local audio files, honoring the configured
- * supported extensions and the directory filter. Also resolves sidecar/embedded lyrics.
+ * Scans local audio. On API 30+ it prefers direct file-system traversal after
+ * the user grants "All files access" (MANAGE_EXTERNAL_STORAGE), which reliably
+ * finds music even when MediaStore has not indexed it or returns a null DATA
+ * path. Results are emitted incrementally so the UI updates in near real-time.
+ * Below API 30 it falls back to MediaStore with runtime read permission.
  */
 class LocalMusicRepository(
     private val context: Context,
     private val settings: AppSettings
 ) {
+    private val ctx: Context = context.applicationContext
+
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
     val songs: StateFlow<List<Song>> = _songs.asStateFlow()
 
@@ -30,65 +40,174 @@ class LocalMusicRepository(
 
     private val supportedExt = setOf("mp3", "m4a", "mp4", "aac", "flac", "ogg", "oga", "wav", "opus", "wma", "amr")
 
+    /** True when we can read files directly (API 30+ all-files access, or legacy READ permission). */
+    fun canScanByFileSystem(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+
+    /** Audio read permission needed on the current SDK (READ_MEDIA_AUDIO on 33+, else READ_EXTERNAL_STORAGE). */
+    fun requiredAudioPermission(): String =
+        if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+        else Manifest.permission.READ_EXTERNAL_STORAGE
+
     suspend fun scan() = withContext(Dispatchers.IO) {
         _isScanning.value = true
         try {
             val ignored = settings.ignoredDirs.value.map { it.trimEnd('/') }
-            val rootFilter = settings.musicRoot.value?.trimEnd('/')
-            val rootEnabled = !rootFilter.isNullOrBlank()
+            val root = settings.musicRoot.value?.trimEnd('/')
             val list = ArrayList<Song>()
-            val projection = arrayOf(
-                MediaStore.Audio.Media._ID,
-                MediaStore.Audio.Media.DISPLAY_NAME,
-                MediaStore.Audio.Media.TITLE,
-                MediaStore.Audio.Media.ARTIST,
-                MediaStore.Audio.Media.ALBUM,
-                MediaStore.Audio.Media.DURATION,
-                MediaStore.Audio.Media.DATA,
-                MediaStore.Audio.Media.DATE_MODIFIED
-            )
-            val sort = "${MediaStore.Audio.Media.DISPLAY_NAME} ASC"
-            runCatching {
-                context.contentResolver.query(
-                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                    projection, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, sort
-                )?.use { cursor ->
-                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                    val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                    val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                    val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
-                    val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-                    val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
-                    while (cursor.moveToNext()) {
-                        val data = cursor.getString(dataCol) ?: continue
-                        val pathFile = File(data)
-                        val ext = pathFile.extension.lowercase()
-                        if (ext !in supportedExt) continue
-                        if (rootEnabled && !data.startsWith(rootFilter!!)) continue
-                        if (ignored.any { data.startsWith(it) }) continue
-                        val id = cursor.getLong(idCol)
-                        val artUri = ContentUris.withAppendedId(
-                            Uri.parse("content://media/external/audio/albumart"),
-                            cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID).let { cursor.getLong(it) }
-                        )
-                        list.add(
-                            Song(
-                                id = "local:$data",
-                                title = cursor.getString(titleCol)?.takeIf { it.isNotBlank() } ?: pathFile.nameWithoutExtension,
-                                artist = cursor.getString(artistCol)?.takeIf { it.isNotBlank() } ?: "未知歌手",
-                                album = cursor.getString(albumCol)?.takeIf { it.isNotBlank() },
-                                pic = artUri.toString(),
-                                durationMs = cursor.getLong(durationCol),
-                                source = SongSource.LOCAL,
-                                localPath = data
-                            )
-                        )
+            if (canScanByFileSystem()) {
+                val meta = loadMediaStoreMeta()
+                for (dir in scanRoots(root)) {
+                    for (f in dir.walkTopDown()) {
+                        if (!f.isFile) continue
+                        if (f.extension.lowercase() !in supportedExt) continue
+                        val path = f.absolutePath
+                        if (ignored.any { path.startsWith(it) }) continue
+                        list.add(buildSong(path, meta))
+                        if (list.size % 20 == 0) _songs.value = list.toList()
                     }
                 }
+            } else {
+                scanViaMediaStore(list, ignored, root)
             }
             _songs.value = list
         } finally {
             _isScanning.value = false
         }
     }
+
+    /** Directories to walk: configured root, else the whole external storage. */
+    private fun scanRoots(root: String?): List<File> {
+        if (!root.isNullOrBlank()) {
+            val f = File(root)
+            return if (f.isDirectory) listOf(f) else emptyList()
+        }
+        return Environment.getExternalStorageDirectory()
+            .takeIf { it.isDirectory }?.let { listOf(it) } ?: emptyList()
+    }
+
+    /** Map real file path -> media metadata, so file walk can reuse title/art/etc. */
+    private fun loadMediaStoreMeta(): Map<String, MediaMeta> {
+        val out = HashMap<String, MediaMeta>()
+        val projection = arrayOf(
+            MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.ALBUM_ID
+        )
+        runCatching {
+            ctx.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, null
+            )?.use { c ->
+                val dataC = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+                val titleC = c.getColumnIndex(MediaStore.Audio.Media.TITLE)
+                val artistC = c.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                val albumC = c.getColumnIndex(MediaStore.Audio.Media.ALBUM)
+                val durC = c.getColumnIndex(MediaStore.Audio.Media.DURATION)
+                val albumIdC = c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID)
+                while (c.moveToNext()) {
+                    val data = c.getString(dataC) ?: continue
+                    val artUri = if (albumIdC >= 0) {
+                        val aid = c.getLong(albumIdC)
+                        ContentUris.withAppendedId(
+                            Uri.parse("content://media/external/audio/albumart"), aid
+                        ).toString()
+                    } else null
+                    out[data] = MediaMeta(
+                        title = if (titleC >= 0) c.getString(titleC) else null,
+                        artist = if (artistC >= 0) c.getString(artistC) else null,
+                        album = if (albumC >= 0) c.getString(albumC) else null,
+                        durationMs = if (durC >= 0) c.getLong(durC) else 0L,
+                        artUri = artUri
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    private fun buildSong(path: String, meta: Map<String, MediaMeta>): Song {
+        val f = File(path)
+        val m = meta[path]
+        return Song(
+            id = "local:$path",
+            title = m?.title?.takeIf { it.isNotBlank() } ?: f.nameWithoutExtension,
+            artist = m?.artist?.takeIf { it.isNotBlank() } ?: "未知歌手",
+            album = m?.album?.takeIf { it.isNotBlank() } ?: f.parentFile?.name,
+            pic = m?.artUri?.takeIf { it.isNotBlank() },
+            durationMs = m?.durationMs ?: 0L,
+            source = SongSource.LOCAL,
+            localPath = path
+        )
+    }
+
+    /** Legacy MediaStore-only scan (used when file-system access is unavailable). */
+    private fun scanViaMediaStore(list: ArrayList<Song>, ignored: List<String>, rootFilter: String?) {
+        val rootEnabled = !rootFilter.isNullOrBlank()
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.ALBUM_ID
+        )
+        val sort = "${MediaStore.Audio.Media.DISPLAY_NAME} ASC"
+        runCatching {
+            ctx.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, sort
+            )?.use { cursor ->
+                val titleC = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+                val artistC = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                val albumC = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
+                val durC = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+                val dataC = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+                val albumIdC = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID)
+                while (cursor.moveToNext()) {
+                    val data = cursor.getString(dataC) ?: continue
+                    val pathFile = File(data)
+                    if (pathFile.extension.lowercase() !in supportedExt) continue
+                    if (rootEnabled && !data.startsWith(rootFilter!!)) continue
+                    if (ignored.any { data.startsWith(it) }) continue
+                    val artUri = if (albumIdC >= 0) {
+                        ContentUris.withAppendedId(
+                            Uri.parse("content://media/external/audio/albumart"),
+                            cursor.getLong(albumIdC)
+                        ).toString()
+                    } else null
+                    list.add(
+                        Song(
+                            id = "local:$data",
+                            title = if (titleC >= 0) cursor.getString(titleC)?.takeIf { it.isNotBlank() } ?: pathFile.nameWithoutExtension else pathFile.nameWithoutExtension,
+                            artist = if (artistC >= 0) cursor.getString(artistC)?.takeIf { it.isNotBlank() } ?: "未知歌手" else "未知歌手",
+                            album = if (albumC >= 0) cursor.getString(albumC)?.takeIf { it.isNotBlank() } ?: pathFile.parentFile?.name else pathFile.parentFile?.name,
+                            pic = artUri,
+                            durationMs = if (durC >= 0) cursor.getLong(durC) else 0L,
+                            source = SongSource.LOCAL,
+                            localPath = data
+                        )
+                    )
+                }
+            }
+        }
+    }
 }
+
+/** Lightweight media metadata for a single local file (keyed by absolute path). */
+private data class MediaMeta(
+    val title: String?,
+    val artist: String?,
+    val album: String?,
+    val durationMs: Long,
+    val artUri: String?
+)

@@ -59,6 +59,30 @@ class KuwoApi(
     @Volatile
     private var liveSecret: String? = null
 
+    // ---- account (cookie-based login) overrides ----
+    @Volatile
+    private var overrideCookie: String? = null
+
+    @Volatile
+    private var overrideSecret: String? = null
+
+    /**
+     * Apply a logged-in cookie string (e.g. copied from www.kuwo.cn after a
+     * web login). A fresh Secret is derived from the live `Hm_Iuvt_...` token
+     * inside it. Pass null/blank to drop back to the anonymous session.
+     */
+    fun setAccountCookie(rawCookie: String?) {
+        overrideCookie = rawCookie?.takeIf { it.isNotBlank() }
+        overrideSecret = overrideCookie?.let { c ->
+            val m = Regex("(Hm_Iuvt_[A-Za-z0-9]+)=([^;]+)").find(c)
+            m?.let { KuwoSecret.secretFor(it.groupValues[1], it.groupValues[2].trim()) }
+        }
+        sessionReady = false
+    }
+
+    /** Cookie to send on every request: logged-in cookie wins over the default. */
+    private fun currentCookie(): String = overrideCookie ?: KuwoSecret.COOKIE
+
     /**
      * Warm up a kuwo session: visiting the homepage returns a live
      * `Hm_Iuvt_...` token that the Secret header must be derived from.
@@ -82,7 +106,7 @@ class KuwoApi(
         }
     }
 
-    private fun currentSecret(): String = liveSecret ?: KuwoSecret.secret
+    private fun currentSecret(): String = overrideSecret ?: liveSecret ?: KuwoSecret.secret
 
     private suspend fun get(path: String, referer: String? = null): JsonElement? = withContext(Dispatchers.IO) {
         try {
@@ -90,7 +114,7 @@ class KuwoApi(
             val url = if (path.startsWith("http")) path else "https://www.kuwo.cn$path"
             val builder = Request.Builder()
                 .url(url)
-                .header("Cookie", KuwoSecret.COOKIE)
+                .header("Cookie", currentCookie())
                 .header("Secret", currentSecret())
                 .header("Referer", referer ?: "https://www.kuwo.cn/")
                 .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
@@ -135,7 +159,7 @@ class KuwoApi(
             runCatching {
                 client.newCall(
                     Request.Builder().url(url)
-                        .header("Cookie", KuwoSecret.COOKIE)
+                        .header("Cookie", currentCookie())
                         .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                         .build()
                 ).execute().use { it.body?.string() }
@@ -215,7 +239,7 @@ class KuwoApi(
         try {
             client.newCall(
                 Request.Builder().url(url)
-                    .header("Cookie", KuwoSecret.COOKIE)
+                    .header("Cookie", currentCookie())
                     .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                     .build()
             ).execute().use { resp ->
@@ -235,7 +259,7 @@ class KuwoApi(
                 json.parseToJsonElement(
                     sessionClient.newCall(
                         Request.Builder().url(url)
-                            .header("Cookie", KuwoSecret.COOKIE)
+                            .header("Cookie", currentCookie())
                             .header("Secret", currentSecret())
                             .header("Referer", "https://www.kuwo.cn/play_detail/${urlEncode(sid)}")
                             .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")

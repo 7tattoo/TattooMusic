@@ -47,4 +47,22 @@ class AppSettings(context: Context) {
     // ---- theme ----
     val darkTheme = MutableStateFlow(prefs.getBoolean("dark_theme", false))
     fun setDarkTheme(v: Boolean) { prefs.edit().putBoolean("dark_theme", v).apply(); darkTheme.value = v }
+
+    // ---- kuwo account (cookie-based login) ----
+    val kuwoCookie = MutableStateFlow(prefs.getString("kuwo_cookie", null))
+    val kuwoNickname = MutableStateFlow(prefs.getString("kuwo_nickname", "刺青用户"))
+
+    val isKuwoLoggedIn: Boolean get() = !kuwoCookie.value.isNullOrBlank()
+
+    fun setKuwoAccount(cookie: String?, nickname: String?) {
+        val nick = nickname?.takeIf { it.isNotBlank() } ?: "刺青用户"
+        prefs.edit().apply {
+            if (cookie.isNullOrBlank()) remove("kuwo_cookie") else putString("kuwo_cookie", cookie)
+            putString("kuwo_nickname", nick)
+        }.apply()
+        kuwoCookie.value = cookie
+        kuwoNickname.value = nick
+    }
+
+    fun clearKuwoAccount() = setKuwoAccount(null, "刺青用户")
 }

@@ -66,10 +66,17 @@ fun MineScreen(
     var favExpanded by remember { mutableStateOf(false) }
     var showNewDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
+    var showAccountSheet by remember { mutableStateOf(false) }
     var activeSelfPlaylist by remember { mutableStateOf<LocalPlaylist?>(null) }
     var activeFavPlaylist by remember { mutableStateOf<FavoritePlaylist?>(null) }
 
     val context = LocalContext.current
+
+    val loggedIn by container.settings.kuwoCookie.collectAsState()
+    val nickname by container.settings.kuwoNickname.collectAsState()
+    val isLoggedIn = !loggedIn.isNullOrBlank()
+    val displayName = nickname ?: "刺青用户"
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -89,7 +96,8 @@ fun MineScreen(
                             )
                         )
                     )
-                    .padding(24.dp),
+                    .padding(24.dp)
+                    .clickable { if (isLoggedIn) showAccountSheet = true else showLoginDialog = true },
                 contentAlignment = Alignment.CenterStart
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -102,10 +110,13 @@ fun MineScreen(
                     }
                     Spacer(Modifier.width(16.dp))
                     Column {
-                        Text("刺青用户", style = MaterialTheme.typography.titleLarge)
+                        Text(displayName, style = MaterialTheme.typography.titleLarge)
                         Spacer(Modifier.height(4.dp))
-                        Text("让每一首歌都值得被听见", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (isLoggedIn) "已登录酷我账号 · 点击查看" else "点击登录酷我账号",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -213,6 +224,12 @@ fun MineScreen(
     if (showImportDialog) {
         ImportPlaylistDialog(container, context) { showImportDialog = false }
     }
+    if (showLoginDialog) {
+        KuwoLoginDialog(container) { showLoginDialog = false }
+    }
+    if (showAccountSheet) {
+        KuwoAccountSheet(container) { showAccountSheet = false }
+    }
     activeSelfPlaylist?.let { pl ->
         ModalSelfPlaylistSheet(pl, container, onOpenPlayer) { activeSelfPlaylist = null }
     }
@@ -305,6 +322,79 @@ private fun ModalSelfPlaylistSheet(pl: LocalPlaylist, container: AppContainer, o
                         onOpenPlayer(); onDismiss()
                     })
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KuwoLoginDialog(container: AppContainer, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var cookie by remember { mutableStateOf("") }
+    var nickname by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("登录酷我账号") },
+        text = {
+            Column {
+                Text("在电脑浏览器打开 https://www.kuwo.cn 并登录，按下 F12 打开开发者工具 → 应用/Application → Cookies，复制全部 Cookie 值粘贴到下面（保留 Hm_Iuvt_ 开头的令牌）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(10.dp))
+                TextField(
+                    value = cookie,
+                    onValueChange = { cookie = it },
+                    label = { Text("Cookie") },
+                    modifier = Modifier.fillMaxWidth().height(120.dp)
+                )
+                Spacer(Modifier.height(8.dp))
+                TextField(
+                    value = nickname,
+                    onValueChange = { nickname = it },
+                    label = { Text("昵称（可选）") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (cookie.isBlank()) {
+                    Toast.makeText(context, "请先粘贴 Cookie", Toast.LENGTH_SHORT).show()
+                } else {
+                    container.settings.setKuwoAccount(cookie, nickname)
+                    container.api.setAccountCookie(cookie)
+                    Toast.makeText(context, "已登录酷我账号", Toast.LENGTH_SHORT).show()
+                    onDismiss()
+                }
+            }) { Text("登录") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun KuwoAccountSheet(container: AppContainer, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val nickname by container.settings.kuwoNickname.collectAsState()
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Text(nickname ?: "刺青用户", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("已使用酷我账号 Cookie 在线登录", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
+            TextButton(onClick = {
+                container.settings.clearKuwoAccount()
+                container.api.setAccountCookie(null)
+                Toast.makeText(context, "已退出登录", Toast.LENGTH_SHORT).show()
+                onDismiss()
+            }) {
+                Text("退出登录")
             }
         }
     }
