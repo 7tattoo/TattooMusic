@@ -31,6 +31,15 @@ object KuwoSecret {
     /** The value of @param f used as the hashing password. */
     private val fValue: String = pick(F)
 
+    /**
+     * Neutral UA sent on public (secret-free) kuwo endpoints
+     * (search.kuwo.cn, antiserver.kuwo.cn, m.kuwo.cn). Deliberately does NOT
+     * reference [headers]/[secret]: the Secret hash is only needed by the
+     * www.kuwo.cn API and computing it has no bearing on these endpoints.
+     */
+    const val MOBILE_UA =
+        "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
     private fun h(t: String, e: String, rand: Random = Random.Default): String {
         if (e.isEmpty()) throw IllegalStateException("empty password")
         val digits = StringBuilder()
@@ -63,8 +72,8 @@ object KuwoSecret {
         return out.toString() + dHex
     }
 
-    /** The value to send in the Secret header. */
-    val secret: String by lazy { h(fValue, F) }
+    /** The value to send in the Secret header. Computed defensively so it never throws. */
+    val secret: String by lazy { runCatching { h(fValue, F) }.getOrNull() ?: "0" }
 
     /**
      * Compute a Secret for a live token pair (e.g. a freshly rotated
