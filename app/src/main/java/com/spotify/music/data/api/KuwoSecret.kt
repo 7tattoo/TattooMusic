@@ -50,7 +50,7 @@ object KuwoSecret {
             val b = seed.substring(10).toLong()
             seed = (a + b).toString()
         }
-        var n = (o * nStr.toLong() + l) % c
+        var n = (o * seed.toLong() + l) % c
         val out = StringBuilder()
         for (i in t.indices) {
             val normalised = floor(n.toDouble() / c * 255.0).toInt()
@@ -65,6 +65,14 @@ object KuwoSecret {
 
     /** The value to send in the Secret header. */
     val secret: String by lazy { h(fValue, F) }
+
+    /**
+     * Compute a Secret for a live token pair (e.g. a freshly rotated
+     * `Hm_Iuvt_...` cookie). Returns null when the token cannot be hashed
+     * (too short / index overflow), so callers can fall back to the static one.
+     */
+    fun secretFor(tokenName: String, tokenValue: String, rand: Random = Random.Default): String? =
+        runCatching { h(tokenValue, tokenName, rand) }.getOrNull()
 
     val headers: Map<String, String> by lazy {
         mapOf(

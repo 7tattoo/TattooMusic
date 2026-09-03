@@ -13,9 +13,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -28,17 +32,70 @@ class KuwoApi(
     private val client: OkHttpClient = defaultClient
 ) {
 
+    /** In-memory cookie store so a warmup visit persists the live session. */
+    private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
+    private val cookieJar = object : CookieJar {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            val host = url.host
+            val existing = cookieStore.getOrPut(host) { mutableListOf() }
+            for (c in cookies) {
+                val it = existing.indexOfFirst { it.name == c.name }
+                if (it >= 0) existing[it] = c else existing.add(c)
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> =
+            cookieStore[url.host]?.toList() ?: emptyList()
+    }
+
+    /** Client with cookie persistence, used for all www.kuwo.cn API calls. */
+    private val sessionClient: OkHttpClient = client.newBuilder()
+        .cookieJar(cookieJar)
+        .build()
+
+    @Volatile
+    private var sessionReady = false
+
+    @Volatile
+    private var liveSecret: String? = null
+
+    /**
+     * Warm up a kuwo session: visiting the homepage returns a live
+     * `Hm_Iuvt_...` token that the Secret header must be derived from.
+     * With it we compute a live Secret; otherwise fall back to the static one.
+     */
+    private suspend fun ensureSession() {
+        if (sessionReady) return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                sessionClient.newCall(
+                    Request.Builder().url("https://www.kuwo.cn/")
+                        .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
+                        .build()
+                ).execute().use { it.body?.close() }
+            }
+            liveSecret = cookieStore["www.kuwo.cn"]
+                ?.firstOrNull { it.name.startsWith("Hm_Iuvt_") && it.value.isNotBlank() }
+                ?.let { KuwoSecret.secretFor(it.name, it.value) }
+                ?: KuwoSecret.secret
+            sessionReady = true
+        }
+    }
+
+    private fun currentSecret(): String = liveSecret ?: KuwoSecret.secret
+
     private suspend fun get(path: String, referer: String? = null): JsonElement? = withContext(Dispatchers.IO) {
         try {
+            ensureSession()
             val url = if (path.startsWith("http")) path else "https://www.kuwo.cn$path"
             val builder = Request.Builder()
                 .url(url)
                 .header("Cookie", KuwoSecret.COOKIE)
-                .header("Secret", KuwoSecret.secret)
+                .header("Secret", currentSecret())
                 .header("Referer", referer ?: "https://www.kuwo.cn/")
                 .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                 .header("Accept", "application/json,text/plain,*/*")
-            client.newCall(builder.build()).execute().use { resp ->
+            sessionClient.newCall(builder.build()).execute().use { resp ->
                 val body = resp.body?.string() ?: return@withContext null
                 if (!resp.isSuccessful) return@withContext null
                 runCatching { json.parseToJsonElement(body) }.getOrNull()
@@ -174,11 +231,12 @@ class KuwoApi(
         val url = "https://www.kuwo.cn/comment?type=15&f=web&page=$page&rows=$rows&digest=15&sid=$sid&uid=0&prod=newWeb&httpsStatus=1"
         val el = runCatching {
             withContext(Dispatchers.IO) {
+                ensureSession()
                 json.parseToJsonElement(
-                    client.newCall(
+                    sessionClient.newCall(
                         Request.Builder().url(url)
                             .header("Cookie", KuwoSecret.COOKIE)
-                            .header("Secret", KuwoSecret.secret)
+                            .header("Secret", currentSecret())
                             .header("Referer", "https://www.kuwo.cn/play_detail/${urlEncode(sid)}")
                             .header("User-Agent", KuwoSecret.headers["User-Agent"] ?: "")
                             .build()
