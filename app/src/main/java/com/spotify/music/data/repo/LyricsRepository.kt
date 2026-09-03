@@ -26,9 +26,23 @@ class LyricsRepository(
 
     private suspend fun parseLocal(song: Song): List<LyricLine> =
         withContext(Dispatchers.IO) {
-            val path = song.localPath?.takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
-            val raw = embeddedReader.readLyrics(path) ?: return@withContext emptyList()
-            LrcTextParser.parse(raw)
+            val path = song.localPath?.takeIf { it.isNotEmpty() }
+            val raw = path?.let { embeddedReader.readLyrics(it) }
+            if (!raw.isNullOrBlank()) {
+                val lines = LrcTextParser.parse(raw)
+                if (lines.isNotEmpty()) return@withContext lines
+            }
+            // Network fallback: match the song by title (and artist) and pull lyrics.
+            val keyword = listOfNotNull(song.title, song.artist)
+                .joinToString(" ") { it.trim() }.trim()
+            if (keyword.isNotEmpty()) {
+                runCatching {
+                    api.searchSongs(keyword, 1, 3).firstOrNull()?.let { hit ->
+                        api.getLyrics(hit.id)
+                    }
+                }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+            }
+            emptyList()
         }
 
     /** Reconstruct a standard LRC string from parsed lines (for car screen lyrics). */

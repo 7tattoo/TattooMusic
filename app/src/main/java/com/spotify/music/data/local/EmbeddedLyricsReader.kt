@@ -13,8 +13,14 @@ class EmbeddedLyricsReader {
     fun readLyrics(audioPath: String?): String? {
         if (audioPath.isNullOrEmpty()) return null
 
-        // 1) sidecar .lrc / .txt
         val file = File(audioPath)
+
+        // 1) embedded lyrics take precedence over everything.
+        runCatching { extractEmbedded(file) }.getOrNull()?.let {
+            if (it.isNotBlank()) return it
+        }
+
+        // 2) otherwise sidecar .lrc / .txt next to the audio file.
         val base = file.nameWithoutExtension
         val dir = file.parentFile
         if (dir != null) {
@@ -31,8 +37,7 @@ class EmbeddedLyricsReader {
             }
         }
 
-        // 2) embedded lyrics
-        return runCatching { extractEmbedded(file) }.getOrNull()
+        return null
     }
 
     private fun extractEmbedded(file: File): String? {
@@ -124,19 +129,22 @@ class EmbeddedLyricsReader {
     // ------------------ FLAC Vorbis comment ------------------
     private fun extractFlacLyrics(b: ByteArray): String? {
         if (b.size < 4 || iso(b, 0, 4) != "fLaC") return null
+        // FLAC metadata block headers are BIG-endian: 1 bit last-flag, 7 bits
+        // type, 24 bits length. (Internally the Vorbis comment fields are
+        // little-endian; that part is handled by readIntLE in parseVorbisComments.)
         var offset = 4
-        var header = readIntLE(b, offset)
+        var header = readIntBE(b, offset)
         var isLast = (header and 0x80000000.toInt()) != 0
         var type = (header ushr 24) and 0x7f
         var length = header and 0x00ffffff
         offset += 4
-        while (offset < b.size) {
+        while (offset + 4 <= b.size) {
             if (type == 4) { // VORBIS_COMMENT
                 return parseVorbisComments(b, offset, length)
             }
             offset += length
             if (isLast || offset + 4 > b.size) break
-            header = readIntLE(b, offset)
+            header = readIntBE(b, offset)
             isLast = (header and 0x80000000.toInt()) != 0
             type = (header ushr 24) and 0x7f
             length = header and 0x00ffffff
@@ -149,7 +157,8 @@ class EmbeddedLyricsReader {
         var p = start
         val end = minOf(b.size, start + length)
         if (p + 4 > end) return null
-        p += 4 // vendor string length
+        val vendorLen = readIntLE(b, p); p += 4
+        p += vendorLen // skip the vendor string itself (previous bug omitted this)
         if (p + 4 > end) return null
         val count = readIntLE(b, p); p += 4
         for (k in 0 until count) {
@@ -223,6 +232,12 @@ class EmbeddedLyricsReader {
             ((b[at + 1].toInt() and 0xff) shl 8) or
             ((b[at + 2].toInt() and 0xff) shl 16) or
             ((b[at + 3].toInt() and 0xff) shl 24)
+
+    private fun readIntBE(b: ByteArray, at: Int): Int =
+        ((b[at].toInt() and 0xff) shl 24) or
+            ((b[at + 1].toInt() and 0xff) shl 16) or
+            ((b[at + 2].toInt() and 0xff) shl 8) or
+            (b[at + 3].toInt() and 0xff)
 
     private fun decodeUtf8(b: ByteArray, s: Int, e: Int): String =
         String(b, s.coerceAtMost(b.size), (e - s).coerceAtLeast(0), Charsets.UTF_8)
