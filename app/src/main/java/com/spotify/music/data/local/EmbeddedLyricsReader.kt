@@ -82,23 +82,36 @@ class EmbeddedLyricsReader {
     private fun readUslt(b: ByteArray, start: Int, end: Int): String? {
         if (end - start < 4) return null
         val encoding = b[start].toInt() and 0xff
-        // skip language (3 bytes) then optional content descriptor (terminated)
+        // skip encoding byte + 3-byte language, then the optional content
+        // descriptor (terminated per the text encoding).
         var p = start + 4
-        // skip until NUL/LF token for descriptor
-        while (p < end) {
-            val c = b[p].toInt() and 0xff
-            if (c == 0) { p++ ; break }
-            if (encoding == 3 && c == 0) { p++ ; break }
-            p++
-        }
-        if (p >= end) return null
+        p = skipDescriptor(b, p, end, encoding)
+        if (p < 0 || p >= end) return null
         val text = when (encoding) {
             0 -> decodeLatin1(b, p, end)
             1, 2 -> decodeUtf16(b, p, end)
-            3 -> decodeUtf8(b, p, end)
             else -> decodeUtf8(b, p, end)
         }
-        return text
+        // strip trailing NULs / whitespace that frequently pad the frame
+        return text.trimStart('\u0000').trimEnd('\u0000').trim()
+            .takeIf { it.isNotBlank() }
+    }
+
+    /** Skip a NUL-terminated field where the terminator width depends on encoding. */
+    private fun skipDescriptor(b: ByteArray, from: Int, end: Int, encoding: Int): Int {
+        val twoByte = encoding == 1 || encoding == 2
+        // Encoding 1 = UTF-16 with BOM; an empty descriptor may still carry no BOM.
+        var i = from
+        while (i < end) {
+            val c = b[i].toInt() and 0xff
+            if (c == 0) {
+                // UTF-16 terminator is 0x00 0x00 (BE) or 0x00 0x00 (LE after a BOM).
+                if (twoByte && i + 1 < end && (b[i + 1].toInt() and 0xff) == 0) return i + 2
+                return i + 1
+            }
+            i++
+        }
+        return -1
     }
 
     // ------------------ FLAC Vorbis comment ------------------

@@ -29,6 +29,16 @@ object LrcTextParser {
                 out.add(LyricLine(ms, text))
             }
         }
-        return out.sortedBy { it.timeMs }
+        if (out.isNotEmpty()) return out.sortedBy { it.timeMs }
+
+        // Unsynchronized lyrics (no [mm:ss] timestamps). Show the plain text at
+        // time 0 so an otherwise valid embedded lyric is never lost.
+        val metaTag = Regex("""^\[(ti|ar|al|by|offset|length|re|ve|tool|total)\s*:""", RegexOption.IGNORE_CASE)
+        val lines = raw.lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { metaTag.containsMatchIn(it) }
+        if (lines.isEmpty()) return emptyList()
+        return lines.take(300).map { LyricLine(0L, it.substring(0, minOf(it.length, 200))) }
     }
 }

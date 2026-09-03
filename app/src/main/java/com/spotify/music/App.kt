@@ -24,6 +24,9 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        // Re-apply a previously saved kuwo login cookie so the API (and the
+        // home feed) uses the account session across app restarts.
+        container.settings.kuwoCookie.value?.let { container.api.setAccountCookie(it) }
         installCrashLogger()
         wireCallbacks()
     }

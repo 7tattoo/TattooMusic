@@ -7,6 +7,7 @@ import android.provider.MediaStore
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,13 +35,18 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +56,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -93,6 +100,9 @@ fun PlayerScreen(
     val pc = container.playerController
     val context = LocalContext.current
     val song by pc.currentSong.collectAsState()
+    var menuOpen by remember { mutableStateOf(false) }
+    var showPlaylistPicker by remember { mutableStateOf(false) }
+    var showSleep by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -119,9 +129,24 @@ fun PlayerScreen(
                         tint = MaterialTheme.colorScheme.onSurface)
                 }
                 Text("正在播放", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                IconButton(onClick = {}) {
-                    Icon(Icons.Rounded.MoreHoriz, contentDescription = "更多",
-                        tint = MaterialTheme.colorScheme.onSurface)
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Rounded.MoreHoriz, contentDescription = "更多",
+                            tint = MaterialTheme.colorScheme.onSurface)
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("添加到歌单") },
+                            leadingIcon = { Icon(Icons.Rounded.PlaylistAdd, contentDescription = null) },
+                            enabled = song != null,
+                            onClick = { menuOpen = false; showPlaylistPicker = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("定时关闭") },
+                            leadingIcon = { Icon(Icons.Rounded.Schedule, contentDescription = null) },
+                            onClick = { menuOpen = false; showSleep = true }
+                        )
+                    }
                 }
             }
 
@@ -173,6 +198,126 @@ fun PlayerScreen(
             Spacer(Modifier.height(20.dp))
         }
     }
+
+    if (showPlaylistPicker) {
+        PlaylistPickerSheet(container, song, onDismiss = { showPlaylistPicker = false })
+    }
+    if (showSleep) {
+        PlayerSleepDialog(container, onDismiss = { showSleep = false })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaylistPickerSheet(
+    container: AppContainer,
+    song: Song?,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val playlists by container.playlistRepository.selfPlaylists.collectAsState()
+    var createName by remember { mutableStateOf("") }
+    var creating by remember { mutableStateOf(false) }
+
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)) {
+            Text("添加到歌单", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            if (creating) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = createName,
+                        onValueChange = { createName = it },
+                        label = { Text("歌单名称") },
+                        modifier = Modifier.weight(1f).height(54.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        val name = createName.trim().ifBlank { "新建歌单" }
+                        val pl = container.playlistRepository.createPlaylist(name)
+                        song?.let { container.playlistRepository.addToPlaylist(pl.id, it) }
+                        createName = ""
+                        creating = false
+                        Toast.makeText(context, "已添加到「$name」", Toast.LENGTH_SHORT).show()
+                        onDismiss()
+                    }) { Text("创建") }
+                }
+            } else {
+                TextButton(onClick = { creating = true }) {
+                    Icon(Icons.Rounded.PlaylistAdd, contentDescription = null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("新建歌单")
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            androidx.compose.material3.HorizontalDivider()
+            if (playlists.isEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("暂无歌单，可点击上方「新建歌单」创建",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
+                    items(playlists) { pl ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                song?.let { s ->
+                                    container.playlistRepository.addToPlaylist(pl.id, s)
+                                    Toast.makeText(context, "已添加到「${pl.name}」", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                }
+                            }.padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            androidx.compose.material3.Icon(
+                                Icons.Rounded.QueueMusic, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(pl.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                            Text("${pl.songs.size} 首", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        androidx.compose.material3.HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerSleepDialog(container: AppContainer, onDismiss: () -> Unit) {
+    val active by container.sleepTimer.active.collectAsState()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("定时关闭") },
+        text = {
+            Column {
+                Text(if (active) "当前剩余 ${container.sleepTimer.remainingMinutes()} 分钟" else "在一段时间后自动停止播放。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                Row {
+                    listOf(15L, 30L, 60L, 90L).forEach { m ->
+                        TextButton(onClick = {
+                            container.sleepTimer.start(m)
+                            onDismiss()
+                        }) { Text("${m}分钟") }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                container.sleepTimer.stop()
+                onDismiss()
+            }) { Text(if (active) "取消定时" else "关闭") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 // ---------------- Landscape player (参考 H1.png, adapts to square/wide car) ----------------

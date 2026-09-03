@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicOff
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,9 +52,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.spotify.music.AppContainer
+import com.spotify.music.data.LocalSort
+import com.spotify.music.data.model.Song
 import com.spotify.music.ui.EmptyState
 import com.spotify.music.ui.SongRow
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun LocalScreen(
@@ -63,9 +68,12 @@ fun LocalScreen(
     val context = LocalContext.current
     val songs by container.localMusicRepository.songs.collectAsState()
     val isScanning by container.localMusicRepository.isScanning.collectAsState()
+    val sort by container.settings.localSort.collectAsState()
+    val displayed = remember(songs, sort) { applyLocalSort(songs, sort) }
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var showDirs by remember { mutableStateOf(false) }
+    var showSort by remember { mutableStateOf(false) }
 
     val audioPermission = container.localMusicRepository.requiredAudioPermission()
 
@@ -157,6 +165,11 @@ fun LocalScreen(
                         onClick = { menuOpen = false; performScan() }
                     )
                     DropdownMenuItem(
+                        text = { Text("排序方式 · ${sort.label}") },
+                        leadingIcon = { Icon(Icons.Rounded.Sort, contentDescription = null) },
+                        onClick = { menuOpen = false; showSort = true }
+                    )
+                    DropdownMenuItem(
                         text = { Text("添加音乐目录") },
                         leadingIcon = { Icon(Icons.Rounded.FolderOpen, contentDescription = null) },
                         onClick = { menuOpen = false; dirPicker.launch(null) }
@@ -196,9 +209,9 @@ fun LocalScreen(
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-                items(songs) { song ->
+                items(displayed) { song ->
                     SongRow(song, onClick = {
-                        container.playerController.playQueue(songs, songs.indexOf(song))
+                        container.playerController.playQueue(displayed, displayed.indexOf(song))
                         onOpenPlayer()
                     })
                 }
@@ -208,6 +221,56 @@ fun LocalScreen(
 
     if (showDirs) {
         MusicDirDialog(container) { showDirs = false }
+    }
+    if (showSort) {
+        SortSheet(container, sort) { showSort = false }
+    }
+}
+
+/** Sort selector bottom sheet; selection is auto-remembered in settings. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun SortSheet(container: AppContainer, current: LocalSort, onDismiss: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)) {
+            Text("本地音乐排序", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text("排序选项会自动记忆，下次打开仍按此顺序显示",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            androidx.compose.material3.HorizontalDivider()
+            LocalSort.values().forEach { s ->
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable { container.settings.setLocalSort(s); onDismiss() }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(s.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    if (s == current) {
+                        androidx.compose.material3.Icon(
+                            Icons.Rounded.MusicOff, contentDescription = "当前",
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                androidx.compose.material3.HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                )
+            }
+        }
+    }
+}
+
+/** Apply the selected sort order to a local song list. */
+private fun applyLocalSort(list: List<Song>, s: LocalSort): List<Song> = when (s) {
+    LocalSort.TITLE_ASC -> list.sortedBy { it.title.lowercase() }
+    LocalSort.TITLE_DESC -> list.sortedByDescending { it.title.lowercase() }
+    LocalSort.ARTIST -> list.sortedWith(compareBy({ it.artist.lowercase() }, { it.title.lowercase() }))
+    LocalSort.ALBUM -> list.sortedWith(compareBy({ it.album?.lowercase() ?: "" }, { it.title.lowercase() }))
+    LocalSort.DURATION -> list.sortedWith(compareBy<Song>({ it.durationMs }, { it.title.lowercase() }))
+    LocalSort.MODIFIED -> list.sortedByDescending {
+        it.localPath?.let { p -> File(p).lastModified() } ?: 0L
     }
 }
 

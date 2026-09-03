@@ -106,7 +106,25 @@ class KuwoApi(
         }
     }
 
-    private fun currentSecret(): String = overrideSecret ?: liveSecret ?: KuwoSecret.secret
+    /**
+     * Secret for the outgoing request. Kuwo derives it from the `Hm_Iuvt_...`
+     * anti-bot token; it must be computed from the SAME token that is actually
+     * sent in the Cookie header. When a logged-in cookie is present we always
+     * derive the Secret from its embedded token (even if the cookie was set
+     * later than login, e.g. after a page reload), so requests never mismatch
+     * the session and the home feed stays populated after a web login.
+     */
+    private fun currentSecret(): String {
+        overrideCookie?.let { c ->
+            val m = Regex("(Hm_Iuvt_[A-Za-z0-9]+)=([^;]+)").find(c)
+            val v = m?.groupValues?.getOrNull(2)?.trim()
+            if (m != null && !v.isNullOrBlank()) {
+                val computed = KuwoSecret.secretFor(m.groupValues[1], v)
+                if (computed != null) return computed
+            }
+        }
+        return liveSecret ?: KuwoSecret.secret
+    }
 
     private suspend fun get(path: String, referer: String? = null): JsonElement? = withContext(Dispatchers.IO) {
         try {

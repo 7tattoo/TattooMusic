@@ -41,6 +41,18 @@ class AppSettings(context: Context) {
         setMusicRoots(musicRoots.value.filter { it != path })
     }
 
+    // ---- local music list sort order (auto-remembered) ----
+    private fun readLocalSort(): LocalSort =
+        LocalSort.values().firstOrNull { it.key == prefs.getString("local_sort", LocalSort.TITLE_ASC.key) }
+            ?: LocalSort.TITLE_ASC
+
+    val localSort = MutableStateFlow(readLocalSort())
+
+    fun setLocalSort(s: LocalSort) {
+        prefs.edit().putString("local_sort", s.key).apply()
+        localSort.value = s
+    }
+
     // ---- usb exclusive ----
     val usbExclusiveEnabled = MutableStateFlow(prefs.getBoolean("usb_exclusive", false))
     fun setUsbExclusive(v: Boolean) { prefs.edit().putBoolean("usb_exclusive", v).apply(); usbExclusiveEnabled.value = v }
@@ -73,4 +85,14 @@ class AppSettings(context: Context) {
     }
 
     fun clearKuwoAccount() = setKuwoAccount(null, "刺青用户")
+}
+
+/** Local music list sort options. */
+enum class LocalSort(val key: String, val label: String) {
+    TITLE_ASC("title_asc", "标题·升序"),
+    TITLE_DESC("title_desc", "标题·降序"),
+    ARTIST("artist", "歌手"),
+    ALBUM("album", "专辑"),
+    DURATION("duration", "时长"),
+    MODIFIED("modified", "最近修改")
 }
