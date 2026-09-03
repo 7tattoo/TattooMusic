@@ -1,6 +1,11 @@
 package com.spotify.music.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Configuration
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -23,9 +28,11 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +55,19 @@ import com.spotify.music.ui.screens.MineScreen
 import com.spotify.music.ui.screens.PlayerScreen
 import com.spotify.music.ui.screens.SettingsScreen
 
+private const val DOUBLE_BACK_WINDOW_MS = 2000L
+
+/** Walk up the context chain to the enclosing [Activity]. */
+@Suppress("DEPRECATION")
+internal fun Context.findActivity(): Activity? {
+    var c: Context = this
+    while (c is ContextWrapper) {
+        if (c is Activity) return c
+        c = c.baseContext
+    }
+    return null
+}
+
 enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Rounded.Home),
     MINE("我的", Icons.Rounded.Person),
@@ -59,11 +79,47 @@ enum class MainTab(val label: String, val icon: ImageVector) {
 @Composable
 fun MusicApp() {
     val context = LocalContext.current
+    val activity = context.findActivity()
     val container: AppContainer = App.container(context)
 
     var tab by rememberSaveable { mutableStateOf(MainTab.HOME.name) }
     var playerOpen by rememberSaveable { mutableStateOf(false) }
     val selectedTab = MainTab.valueOf(tab)
+
+    // ---- side-swipe / system back handling ----
+    var lastBackPress by remember { mutableStateOf(0L) }
+    var showExitDialog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = true) {
+        if (playerOpen) {
+            playerOpen = false
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastBackPress < DOUBLE_BACK_WINDOW_MS) {
+                showExitDialog = true
+            } else {
+                lastBackPress = now
+                Toast.makeText(context, "再侧滑一次退出应用", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("退出应用") },
+            text = { Text("确定退出刺青音乐吗？") },
+            confirmButton = {
+                TextButton(onClick = { activity?.finish() }) { Text("退出") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    lastBackPress = 0L
+                    showExitDialog = false
+                }) { Text("取消") }
+            }
+        )
+    }
 
     val configuration = LocalConfiguration.current
 

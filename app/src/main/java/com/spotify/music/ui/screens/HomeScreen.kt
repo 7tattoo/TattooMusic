@@ -1,8 +1,10 @@
 package com.spotify.music.ui.screens
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,11 +35,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import com.spotify.music.AppContainer
 import com.spotify.music.data.model.FavoritePlaylist
 import com.spotify.music.data.model.Song
@@ -53,13 +66,15 @@ fun HomeScreen(
     onOpenPlayer: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var data by remember { mutableStateOf<HomeData?>(null) }
+    val homeRepo = container.homeRepository
+    val data by homeRepo.data.collectAsState()
+    val refreshing by homeRepo.refreshing.collectAsState()
 
-    // Reload whenever the kuwo login cookie changes so the home feed shows
-    // personalized content immediately after logging in / out.
-    val loginCookie by container.settings.kuwoCookie.collectAsState()
-    LaunchedEffect(loginCookie) {
-        data = container.homeRepository.load()
+    // Cache the feed across tab switches: initial load once, then only refresh on
+    // login/logout cookie change or pull-to-refresh. Returning to 首页 no longer reloads.
+    val cookie by container.settings.kuwoCookie.collectAsState()
+    LaunchedEffect(cookie) {
+        homeRepo.onCookieChanged(cookie ?: "")
     }
 
     Scaffold(
@@ -85,10 +100,17 @@ fun HomeScreen(
         if (home == null) {
             Box(Modifier.padding(padding).fillMaxSize()) { CenterLoading() }
         } else {
-            LazyColumn(
-                modifier = Modifier.padding(padding).fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)
+            PullRefreshFrame(
+                isRefreshing = refreshing,
+                onRefresh = { homeRepo.refresh() },
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
             ) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)
+                ) {
                 item { SectionHeader("每日推荐", trailing = "点击播放") }
                 item {
                     SongStrip(home.dailyRecommend, container, onOpenPlayer)
@@ -113,6 +135,77 @@ fun HomeScreen(
                     Spacer(Modifier.height(14.dp))
                 }
             }
+        }
+        }
+    }
+}
+
+/** A minimal pull-to-refresh container (Material3 1.2.1 has no built-in PullToRefreshBox). */
+@Composable
+private fun PullRefreshFrame(
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val pull = remember { Animatable(0f) }
+    val thresholdPx = with(density) { 84.dp.toPx() }
+    val maxPx = with(density) { 140.dp.toPx() }
+
+    val currentRefreshing by rememberUpdatedState(isRefreshing)
+    val currentOnRefresh by rememberUpdatedState(onRefresh)
+
+    // Settle back once the refresh finishes.
+    LaunchedEffect(isRefreshing) {
+        if (!isRefreshing) pull.snapTo(0f)
+    }
+
+    val connection = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (source == NestedScrollSource.Drag && available.y > 0 && !currentRefreshing) {
+                    val next = (pull.value + available.y).coerceIn(0f, maxPx)
+                    if (next != pull.value) {
+                        scope.launch { pull.snapTo(next) }
+                        return Offset(0f, available.y)
+                    }
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (pull.value >= thresholdPx && !currentRefreshing) {
+                    pull.snapTo(thresholdPx)
+                    currentOnRefresh()
+                } else {
+                    pull.animateTo(0f)
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+
+    Box(modifier = modifier.nestedScroll(connection)) {
+        content()
+        val shown = pull.value > 0f || currentRefreshing
+        if (shown) {
+            val progress = (pull.value / thresholdPx).coerceIn(0f, 1f)
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 10.dp)
+                    .size(26.dp)
+                    .graphicsLayer {
+                        alpha = if (currentRefreshing) 1f else progress
+                    },
+                strokeWidth = 3.dp
+            )
         }
     }
 }

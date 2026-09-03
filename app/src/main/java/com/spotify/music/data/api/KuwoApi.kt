@@ -247,27 +247,49 @@ class KuwoApi(
         )
     }
 
-    /** Resolve the playable stream URL for a song id. */
+    /**
+     * Resolve a playable stream URL for a kuwo song id. Several bitrate candidates
+     * are tried and the first one whose payload is genuine audio is returned. Some
+     * tracks (VIP/live/DRM) make antiserver send an HTML "需客户端播放" stub instead of
+     * audio, so we probe the payload and skip those, preventing the confusing
+     * "歌曲需要从kuwo音乐客户端进行播放" playback error.
+     */
     suspend fun getPlayUrl(mid: String, br: String = "128kmp3"): String? {
-        // Prefer the secret-free antiserver endpoint.
-        mobilePlayUrl(mid)?.let { return it }
-        logNet("PLAY", "antiserver failed mid=$mid, falling back to www")
-        // Fall back to the legacy www api (requires Secret; often unavailable).
-        val el = get("/api/v1/www/music/playUrl?mid=$mid&type=music&httpsStatus=1&plat=web_www&from=&br=$br")
-            ?: return null
-        val data = el.j("data") ?: return null
-        val direct = data.str("url")
-        if (!direct.isNullOrEmpty() && direct.startsWith("http")) return direct
-        data.arrayOfObjects()?.forEach { q ->
-            val u = q.str("url")
-            if (!u.isNullOrEmpty() && u.startsWith("http")) return u
+        val candidates = listOf(br, "320kmp3", "192kmp3", "128kaac").distinct()
+        var lastUrl: String? = null
+        for (b in candidates) {
+            val u = mobilePlayUrl(mid, b)
+            if (u == null) continue
+            lastUrl = u
+            if (looksLikeAudio(u)) return u
         }
-        return null
+        logNet("PLAY", "no audio-valid url mid=$mid lastUrl=${lastUrl != null}")
+        // Last resort: return whatever antiserver gave so playback still attempts it.
+        return lastUrl
     }
 
-    private suspend fun mobilePlayUrl(mid: String): String? = withContext(Dispatchers.IO) {
+    /** Quick range probe: is the payload real audio (vs an HTML/DRM page)? */
+    private suspend fun looksLikeAudio(url: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val probe = client.newBuilder()
+                .callTimeout(4, TimeUnit.SECONDS)
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .build()
+            probe.newCall(
+                Request.Builder().url(url)
+                    .header("User-Agent", KuwoSecret.MOBILE_UA)
+                    .header("Range", "bytes=0-1023")
+                    .build()
+            ).execute().use { r ->
+                val ct = r.header("Content-Type")?.lowercase() ?: "audio"
+                ct.startsWith("audio") || !(ct.contains("html") || ct.contains("text"))
+            }
+        }.getOrDefault(false)
+    }
+
+    private suspend fun mobilePlayUrl(mid: String, br: String): String? = withContext(Dispatchers.IO) {
         val rid = if (mid.startsWith("MUSIC_")) mid else "MUSIC_$mid"
-        val url = "http://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=$rid&response=url&format=mp3&br=128kmp3&apiversion=3"
+        val url = "http://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=$rid&response=url&format=mp3&br=$br&apiversion=3"
         val out = runCatching {
             val body = client.newCall(
                 Request.Builder().url(url)
@@ -277,7 +299,7 @@ class KuwoApi(
             val root = runCatching { json.parseToJsonElement(body ?: "{}") }.getOrNull()
             root?.str("url")?.takeIf { it.startsWith("http") }
         }.getOrNull()
-        logNet("PLAYURL", "mid=$rid -> ${if (out == null) "FAIL" else "ok"}")
+        logNet("PLAYURL", "mid=$rid br=$br -> ${if (out == null) "FAIL" else "ok"}")
         out
     }
 

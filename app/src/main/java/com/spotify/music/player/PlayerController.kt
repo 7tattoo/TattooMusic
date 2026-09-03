@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -369,7 +370,9 @@ class PlayerController(
         lyricJob?.cancel()
         lyricJob = scope.launch {
             _lyricStatus.value = LyricStatus.LOADING
-            val lines = lyricsRepository.load(song)
+            // Cap lyric resolution (esp. the network fallback for local songs) so the
+            // UI never gets stuck showing "正在显示歌词" at cold start.
+            val lines = withTimeoutOrNull(6000) { lyricsRepository.load(song) }.orEmpty()
             _lyrics.value = lines
             _lyricStatus.value = if (lines.isEmpty()) LyricStatus.NONE else LyricStatus.READY
             // track current lyric index
