@@ -32,7 +32,18 @@ class EmbeddedLyricsReader {
     }
 
     private fun extractEmbedded(file: File): String? {
-        val bytes = file.inputStream().use { it.readBytes().let { b -> if (b.size > 12_000_000) b.copyOf(12_000_000) else b } }
+        // 限长读取前 12MB，避免大文件 OOM
+        val bytes = file.inputStream().buffered().use { ins ->
+            val n = minOf(file.length(), 12_000_000L).toInt()
+            val buf = ByteArray(n)
+            var off = 0
+            while (off < n) {
+                val r = ins.read(buf, off, n - off)
+                if (r < 0) break
+                off += r
+            }
+            buf
+        }
         val ext = file.extension.lowercase()
         return when (ext) {
             "mp3" -> extractMp3Uslt(bytes)

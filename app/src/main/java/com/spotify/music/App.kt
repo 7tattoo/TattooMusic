@@ -24,7 +24,29 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        installCrashLogger()
         wireCallbacks()
+    }
+
+    /**
+     * Persists any uncaught exception stacktrace to a file so crashes can be
+     * diagnosed without a device/adb. The file lives in the app's external
+     * files dir: /storage/emulated/0/Android/data/<pkg>/files/crash.log
+     */
+    private fun installCrashLogger() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val file = java.io.File(getExternalFilesDir(null), "crash.log")
+                file.parentFile?.mkdirs()
+                file.appendText(
+                    "\n=== crash at ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())} ===\n" +
+                        "thread=${thread.name} ${thread.id}\n" +
+                        android.util.Log.getStackTraceString(throwable) + "\n"
+                )
+            }
+            prev?.uncaughtException(thread, throwable)
+        }
     }
 
     private fun wireCallbacks() {

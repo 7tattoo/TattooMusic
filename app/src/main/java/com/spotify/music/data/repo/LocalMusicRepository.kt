@@ -38,7 +38,9 @@ class LocalMusicRepository(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    private val supportedExt = setOf("mp3", "m4a", "mp4", "aac", "flac", "ogg", "oga", "wav", "opus", "wma", "amr")
+    // Audio-only extensions (no video containers like .mp4/.mkv/.avi),
+    // so the scanner never picks up video files as music.
+    private val supportedExt = setOf("mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wma", "amr", "mka")
 
     /** True when we can read files directly (API 30+ all-files access, or legacy READ permission). */
     fun canScanByFileSystem(): Boolean =

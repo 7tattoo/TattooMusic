@@ -32,6 +32,11 @@ class KuwoLoginActivity : Activity() {
         wv.settings.domStorageEnabled = true
         wv.settings.loadWithOverviewMode = true
         wv.settings.useWideViewPort = true
+        // PC desktop UA so kuwo.cn renders the desktop login page (the mobile
+        // web site doesn't offer account login).
+        wv.settings.userAgentString =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         wv.webViewClient = WebViewClient()
         CookieManager.getInstance().apply {
             setAcceptCookie(true)

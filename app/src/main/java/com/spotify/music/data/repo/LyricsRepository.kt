@@ -6,6 +6,8 @@ import com.spotify.music.data.local.LrcTextParser
 import com.spotify.music.data.model.LyricLine
 import com.spotify.music.data.model.Song
 import com.spotify.music.data.model.SongSource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Resolves lyrics for a song depending on its source:
@@ -22,11 +24,12 @@ class LyricsRepository(
         }
     }
 
-    private fun parseLocal(song: Song): List<LyricLine> {
-        val path = song.localPath?.takeIf { it.isNotEmpty() } ?: return emptyList()
-        val raw = embeddedReader.readLyrics(path) ?: return emptyList()
-        return LrcTextParser.parse(raw)
-    }
+    private suspend fun parseLocal(song: Song): List<LyricLine> =
+        withContext(Dispatchers.IO) {
+            val path = song.localPath?.takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
+            val raw = embeddedReader.readLyrics(path) ?: return@withContext emptyList()
+            LrcTextParser.parse(raw)
+        }
 
     /** Reconstruct a standard LRC string from parsed lines (for car screen lyrics). */
     fun toLrcText(lines: List<LyricLine>): String {
