@@ -1,0 +1,542 @@
+package com.spotify.music.ui.screens
+
+import android.content.ContentValues
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Comment
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowForwardIos
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.spotify.music.AppContainer
+import com.spotify.music.data.model.Comment
+import com.spotify.music.data.model.Song
+import com.spotify.music.data.model.SongSource
+import androidx.media3.common.Player
+import com.spotify.music.player.PlayerController
+import com.spotify.music.ui.SongCover
+import com.spotify.music.ui.components.LyricsView
+import com.spotify.music.ui.formatDuration
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ---------------- Portrait player (参考 S2.PNG) ----------------
+
+@Composable
+fun PlayerScreen(
+    container: AppContainer,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val pc = container.playerController
+    val context = LocalContext.current
+    val song by pc.currentSong.collectAsStateWithLifecycle()
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        MaterialTheme.colorScheme.background
+                    )
+                )
+            )
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            // top bar
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Rounded.ArrowBack, contentDescription = "返回",
+                        tint = MaterialTheme.colorScheme.onSurface)
+                }
+                Text("正在播放", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                IconButton(onClick = {}) {
+                    Icon(Icons.Rounded.MoreHoriz, contentDescription = "更多",
+                        tint = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+
+            // cover
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                SongCover(
+                    model = song?.pic,
+                    modifier = Modifier
+                        .width(210.dp).height(210.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // title / artist
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = song?.title ?: "未在播放",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = song?.artist ?: "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // scrolling lyrics (blue region)
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LyricsView(pc, Modifier.fillMaxSize())
+            }
+
+            // progress + transport
+            ProgressRow(pc)
+            TransportControls(pc, Modifier.fillMaxWidth())
+
+            Spacer(Modifier.height(10.dp))
+
+            // comment + download icons (red region)
+            BottomActionRow(pc, container, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+// ---------------- Landscape player (参考 H1.png, adapts to square/wide car) ----------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LandscapePlayerScreen(
+    container: AppContainer,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val pc = container.playerController
+    val song by pc.currentSong.collectAsStateWithLifecycle()
+    var showLyrics by remember { mutableStateOf(false) }
+
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize().background(
+            Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    MaterialTheme.colorScheme.background
+                )
+            )
+        )
+    ) {
+        val ratio = maxWidth / maxHeight
+        val wide = ratio >= 1.35f
+        if (wide) {
+            Row(Modifier.fillMaxSize()) {
+                // left pane: cover by default, tap toggles lyrics
+                Box(Modifier.weight(1f).fillMaxSize().clickable { showLyrics = !showLyrics }) {
+                    if (showLyrics) {
+                        LyricsView(pc, Modifier.fillMaxSize())
+                    } else {
+                        song?.pic?.let { pic ->
+                            AsyncImage(
+                                model = pic,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .padding(24.dp)
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(28.dp)),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                            )
+                        }
+                    }
+                    // tap hint
+                    Text(
+                        text = if (showLyrics) "点击返回封面" else "点击显示滚动歌词",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                    )
+                }
+                // right pane: controls
+                Column(
+                    Modifier.weight(1f).fillMaxSize().padding(horizontal = 24.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    SongHeader(song)
+                    Spacer(Modifier.height(24.dp))
+                    ProgressRow(pc)
+                    TransportControls(pc, Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(16.dp))
+                    BottomActionRow(pc, container, Modifier.fillMaxWidth())
+                }
+            }
+        } else {
+            // square-ish car screen: stack vertically
+            Column(Modifier.fillMaxSize().padding(24.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Rounded.ArrowBack, contentDescription = "返回")
+                    }
+                    Text("正在播放", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth().weight(1f).clickable { showLyrics = !showLyrics }) {
+                    if (showLyrics) {
+                        LyricsView(pc, Modifier.fillMaxSize())
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            SongCover(model = song?.pic, modifier = Modifier.fillMaxWidth(0.62f).aspectRatio(1f).clip(RoundedCornerShape(26.dp)))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                SongHeader(song)
+                Spacer(Modifier.height(8.dp))
+                ProgressRow(pc)
+                TransportControls(pc, Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                BottomActionRow(pc, container, Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun SongHeader(song: Song?) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text = song?.title ?: "未在播放", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(4.dp))
+        Text(text = song?.artist ?: "", style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// ---------------- shared sub-components ----------------
+
+@Composable
+private fun ProgressRow(pc: PlayerController, modifier: Modifier = Modifier) {
+    val position by pc.positionMs.collectAsStateWithLifecycle()
+    val duration by pc.durationMs.collectAsStateWithLifecycle()
+    var dragPosition by remember { mutableStateOf<Float?>(null) }
+    val shown = dragPosition ?: position.toFloat()
+    val total = (if (duration > 0) duration else 1).toFloat()
+
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Slider(
+            value = shown.coerceIn(0f, total),
+            onValueChange = { dragPosition = it },
+            onValueChangeFinished = {
+                dragPosition?.let { pc.seekTo(it.toLong()) }
+                dragPosition = null
+            },
+            valueRange = 0f..total
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatDuration(shown.toLong()), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(formatDuration(total.toLong()), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun TransportControls(pc: PlayerController, modifier: Modifier = Modifier) {
+    val playing by pc.isPlaying.collectAsStateWithLifecycle()
+    val hasPrev by pc.hasPrevious.collectAsStateWithLifecycle()
+    val hasNext by pc.hasNext.collectAsStateWithLifecycle()
+
+    Row(
+        modifier = modifier.padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = { pc.setRepeatMode(if (pc.repeatMode == Player.REPEAT_MODE_ALL) Player.REPEAT_MODE_OFF else if (pc.repeatMode == Player.REPEAT_MODE_OFF) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_ALL) }) {
+            Icon(
+                when (pc.repeatMode) {
+                    Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOne
+                    Player.REPEAT_MODE_ALL -> Icons.Rounded.Repeat
+                    else -> Icons.Rounded.Repeat
+                },
+                contentDescription = "循环",
+                tint = if (pc.repeatMode != Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        IconButton(onClick = { pc.previous() }, enabled = hasPrev) {
+            Icon(Icons.Rounded.SkipPrevious, contentDescription = "上一首", Modifier.size(34.dp))
+        }
+        Box(
+            modifier = Modifier
+                .size(68.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center
+        ) {
+            IconButton(onClick = { pc.togglePlayPause() }, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (playing) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(38.dp)
+                )
+            }
+        }
+        IconButton(onClick = { pc.next() }, enabled = hasNext) {
+            Icon(Icons.Rounded.SkipNext, contentDescription = "下一首", Modifier.size(34.dp))
+        }
+        IconButton(onClick = { pc.toggleShuffle() }) {
+            Icon(Icons.Rounded.Shuffle, contentDescription = "随机",
+                tint = if (pc.shuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun BottomActionRow(pc: PlayerController, container: AppContainer, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val song by pc.currentSong.collectAsStateWithLifecycle()
+
+    var showComments by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = modifier.padding(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.SpaceAround,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // comment
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            IconButton(onClick = { showComments = song != null && song?.source == SongSource.ONLINE }) {
+                Icon(Icons.AutoMirrored.Rounded.Comment, contentDescription = "评论")
+            }
+            Text("评论", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        // download
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            IconButton(onClick = { song?.let { downloadSong(context, container, it, scope) } }) {
+                Icon(Icons.Rounded.ArrowDownward, contentDescription = "下载")
+            }
+            Text("下载", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        // favorite placeholder (always visible, toggles local new-playlist add)
+        val fav = remember(song?.id) { mutableStateOf(false) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            IconButton(onClick = {
+                fav.value = !fav.value
+                song?.let {
+                    if (fav.value) {
+                        val name = "我喜欢"
+                        val pl = container.playlistRepository.selfPlaylists.value.firstOrNull { p -> p.name == name }
+                            ?: container.playlistRepository.createPlaylist(name)
+                        container.playlistRepository.addToPlaylist(pl.id, it)
+                        Toast.makeText(context, "已收藏到「我喜欢」", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }) {
+                Icon(
+                    imageVector = if (fav.value) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = "喜欢",
+                    tint = if (fav.value) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text("喜欢", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+
+    if (showComments) {
+        CommentsSheet(container = container, song = song) { showComments = false }
+    }
+}
+
+// ---------------- Comments sheet ----------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommentsSheet(container: AppContainer, song: Song?, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var comments by remember(song?.id) { mutableStateOf<List<Comment>>(emptyList()) }
+    var loading by remember(song?.id) { mutableStateOf(true) }
+
+    LaunchedEffect(song?.id) {
+        loading = true
+        comments = withContext(Dispatchers.IO) {
+            song?.let { container.api.comments(it.id, 1, 30) } ?: emptyList()
+        }
+        loading = false
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState()
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+            Text("歌曲评论", style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 20.dp).align(Alignment.CenterHorizontally))
+            Spacer(Modifier.height(8.dp))
+            if (loading) {
+                Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 3.dp)
+                }
+            } else if (comments.isEmpty()) {
+                Text("暂无评论", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(32.dp).align(Alignment.CenterHorizontally))
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().height(420.dp)) {
+                    items(comments.size) { i ->
+                        val c = comments[i]
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+                            SongCover(model = c.avatarUrl, modifier = Modifier.size(40.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(c.user, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(c.dateText, style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(c.content, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------- download helper ----------------
+
+private fun downloadSong(
+    context: android.content.Context,
+    container: AppContainer,
+    song: Song,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    scope.launch {
+        Toast.makeText(context, "正在下载…", Toast.LENGTH_SHORT).show()
+        val ok = withContext(Dispatchers.IO) {
+            try {
+                val url = when (song.source) {
+                    SongSource.LOCAL -> song.localPath ?: return@withContext false
+                    SongSource.ONLINE -> container.api.getPlayUrl(song.id) ?: return@withContext false
+                }
+                val bytes = container.api.rawBytes(url) ?: return@withContext false
+                val fileName = "${song.title} - ${song.artist}.${extFrom(url)}"
+                writeToMediaStore(context, fileName, bytes)
+            } catch (e: Exception) {
+                false
+            }
+        }
+        if (ok) {
+            Toast.makeText(context, "下载完成", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(context, "下载失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+private fun extFrom(url: String): String {
+    val clean = url.substringBefore("?").substringBefore("#")
+    val ext = clean.substringAfterLast('.', "")
+    return if (ext.length in 2..4) ext else "mp3"
+}
+
+private fun writeToMediaStore(
+    context: android.content.Context,
+    fileName: String,
+    bytes: ByteArray
+): Boolean {
+    return try {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "audio/mpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Music/TattooMusic")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+        val resolver = context.contentResolver
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+        val uri: Uri = resolver.insert(collection, values) ?: return false
+        resolver.openOutputStream(uri)?.use { out -> out.write(bytes) } ?: return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
+        true
+    } catch (e: Exception) {
+        false
+    }
+}

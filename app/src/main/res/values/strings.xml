@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">刺青音乐</string>
+    <string name="app_name_en">Tattoo Music</string>
+
+    <!-- 首页 -->
+    <string name="tab_home">首页</string>
+    <string name="tab_mine">我的</string>
+    <string name="tab_local">本地</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- 首页内容 -->
+    <string name="daily_recommend">每日推荐</string>
+    <string name="guess_you_like">猜你喜欢</string>
+    <string name="recommend_playlist">推荐歌单</string>
+    <string name="play_all">播放全部</string>
+
+    <!-- 我的 -->
+    <string name="my_playlists">歌单</string>
+    <string name="self_playlist">自建歌单</string>
+    <string name="favorite_playlist">收藏歌单</string>
+    <string name="new_playlist">新建歌单</string>
+    <string name="import_playlist">导入歌单</string>
+    <string name="recently_played">最近播放</string>
+    <string name="anonymous_user">未登录用户</string>
+
+    <!-- 本地 -->
+    <string name="no_local_music">还没有本地音乐</string>
+    <string name="scan_music">扫描音乐</string>
+    <string name="choose_music_dir">选择音乐目录</string>
+    <string name="scanning">正在扫描…</string>
+
+    <!-- 设置 -->
+    <string name="sleep_timer">睡眠定时器</string>
+    <string name="dir_filter">目录过滤</string>
+    <string name="usb_exclusive_output">独占USB输出</string>
+    <string name="joviincar_lyrics">Joviincar车载歌词</string>
+    <string name="about_app">关于软件</string>
+
+    <!-- 播放页 -->
+    <string name="lyrics_unavailable">暂无歌词</string>
+    <string name="comment">评论</string>
+    <string name="download">下载</string>
+    <string name="no_comment">暂无评论</string>
+</resources>
