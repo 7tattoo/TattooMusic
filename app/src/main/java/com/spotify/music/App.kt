@@ -46,6 +46,8 @@ class App : Application() {
         container.settings.kuwoCookie.value?.let { container.applyKuwoAccount(it) }
         installCrashLogger()
         wireCallbacks()
+        // Resume the last playing song & position across app restarts.
+        container.playerController.restoreLastPlayback()
     }
 
     /**

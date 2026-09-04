@@ -2,6 +2,7 @@ package com.spotify.music.player
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -31,6 +32,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /** Enum describing playback readiness. */
 enum class PlayerBusy { IDLE, LOADING, READY, ERROR }
@@ -106,12 +110,21 @@ class PlayerController(
     private var lyricJob: Job? = null
     private val playbackUserId = AtomicInteger(0)
 
+    // ---- playback position/state persistence (resume-on-start) ----
+    private val resumePrefs: SharedPreferences =
+        context.getSharedPreferences("tattoo_settings", Context.MODE_PRIVATE)
+    private val resumeJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private var lastResumePersistAt = 0L
+    private class ResumeSnapshot(val song: Song, val positionMs: Long, val isPlaying: Boolean)
+
     // callbacks to persist history etc.
     var onSongStarted: ((Song) -> Unit)? = null
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
+            // 播放/暂停瞬间立即落盘，保证被终止时记住最终状态
+            persistResume(force = true)
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -134,9 +147,11 @@ class PlayerController(
                 ?: mediaItem?.let { mediaRegistry[it.mediaId] }
             if (song != null) {
                 _currentSong.value = song
+                _positionMs.value = exoPlayer.currentPosition.coerceAtLeast(0)
                 _error.value = null
                 onSongStarted?.invoke(song)
                 loadLyrics(song)
+                persistResume(force = true)   // 切歌立即记住新曲目
             }
             updateNavAvailability()
         }
@@ -291,6 +306,7 @@ class PlayerController(
         _currentLyricIndex.value = -1
         _currentLyricText.value = null
         stopForegroundPlayback()
+        clearResume()   // 手动停止：不留下可恢复的旧记忆
     }
 
     private fun startForegroundPlayback() {
@@ -312,6 +328,70 @@ class PlayerController(
         exoPlayer.release()
     }
 
+    // ------------- playback position/state memory -------------
+
+    /** Restore the last song, position and play state on app start (resume). */
+    fun restoreLastPlayback() {
+        val snapshot = loadResume() ?: return
+        val song = snapshot.song
+        scope.launch {
+            startForegroundPlayback()
+            playbackBegin(1)
+            _currentSong.value = song
+            _positionMs.value = snapshot.positionMs
+            if (song.durationMs > 0) _durationMs.value = song.durationMs
+            _error.value = null
+            onSongStarted?.invoke(song)
+            loadLyrics(song)
+            val mediaItem = withTimeoutOrNull(15_000) { resolveMediaItem(song) }
+            if (mediaItem == null) {
+                _busy.value = PlayerBusy.ERROR
+                _error.value = if (song.source == SongSource.LOCAL) "无法读取本地文件" else "获取播放地址失败"
+                return@launch
+            }
+            _durationMs.value = if (song.durationMs > 0) song.durationMs else exoPlayer.duration
+            exoPlayer.setMediaItem(mediaItem, snapshot.positionMs)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = snapshot.isPlaying   // 按记忆恢复 播放/暂停
+        }
+    }
+
+    /**
+     * Persist the current snapshot. Forced on song change / play-pause toggle;
+     * otherwise throttled inside the position ticker (low-frequency writes to
+     * SharedPreferences are cheap).
+     */
+    private fun persistResume(force: Boolean) {
+        val song = _currentSong.value
+        if (song == null) { clearResume(); return }
+        val now = System.currentTimeMillis()
+        if (!force && now - lastResumePersistAt < RESUME_PERSIST_INTERVAL_MS) return
+        lastResumePersistAt = now
+        runCatching {
+            resumePrefs.edit()
+                .putString(RESUME_KEY_SONG, resumeJson.encodeToString(song))
+                .putLong(RESUME_KEY_POS, _positionMs.value.coerceAtLeast(0))
+                .putBoolean(RESUME_KEY_PLAYING, _isPlaying.value)
+                .putLong(RESUME_KEY_AT, now)
+                .apply()
+        }
+    }
+
+    private fun loadResume(): ResumeSnapshot? {
+        val songJson = resumePrefs.getString(RESUME_KEY_SONG, null) ?: return null
+        val song = runCatching { resumeJson.decodeFromString<Song>(songJson) }.getOrNull() ?: return null
+        return ResumeSnapshot(song, resumePrefs.getLong(RESUME_KEY_POS, 0L), resumePrefs.getBoolean(RESUME_KEY_PLAYING, true))
+    }
+
+    private fun clearResume() {
+        runCatching {
+            resumePrefs.edit()
+                .remove(RESUME_KEY_SONG).remove(RESUME_KEY_POS)
+                .remove(RESUME_KEY_PLAYING).remove(RESUME_KEY_AT)
+                .apply()
+        }
+    }
+
     // ---------------- helpers ----------------
 
     private fun playbackBegin(queueSize: Int) {
@@ -321,6 +401,7 @@ class PlayerController(
             while (isActive) {
                 _positionMs.value = exoPlayer.currentPosition
                 _durationMs.value = if (exoPlayer.duration > 0) exoPlayer.duration else _durationMs.value
+                persistResume(force = false)   // 按节流周期更新播放进度记忆
                 delay(150)
             }
         }
@@ -413,4 +494,11 @@ class PlayerController(
         }
     }
 
+    private companion object {
+        private const val RESUME_KEY_SONG = "resume_song"
+        private const val RESUME_KEY_POS = "resume_pos"
+        private const val RESUME_KEY_PLAYING = "resume_playing"
+        private const val RESUME_KEY_AT = "resume_at"
+        private const val RESUME_PERSIST_INTERVAL_MS = 3_000L
+    }
 }

@@ -10,7 +10,6 @@ import android.support.v4.media.session.MediaSessionCompat
 import com.spotify.music.App
 import com.spotify.music.data.model.Song
 import com.spotify.music.data.model.SongSource
-import com.spotify.music.player.LyricStatus
 import com.spotify.music.player.PlayerBusy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +89,9 @@ class CarMediaBrowserService : MediaBrowserServiceCompat() {
                 mediaSession.setPlaybackState(pb)
 
                 val song = pc.currentSong.value
+                val mediaId = song?.let {
+                    if (it.source == SongSource.LOCAL) "local:${it.localPath}" else "online:${it.id}"
+                }
                 val artKeyNow = song?.let { if (it.source == SongSource.LOCAL) "local:${it.localPath}" else null }
                 if (artKeyNow != null && artKeyNow != artKey) {
                     artKey = artKeyNow
@@ -100,12 +102,11 @@ class CarMediaBrowserService : MediaBrowserServiceCompat() {
                     session = mediaSession,
                     title = song?.title,
                     artist = song?.artist,
-                    currentLine = pc.currentLyricText.value,
                     wholeLrc = pc.wholeLrc,
-                    isLoading = pc.lyricStatus.value == LyricStatus.LOADING,
                     enabled = enabled,
                     artBitmap = artBitmap,
-                    artUri = song?.pic
+                    artUri = song?.pic,
+                    mediaId = mediaId
                 )
                 delay(150)
             }
