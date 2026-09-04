@@ -30,7 +30,8 @@ import java.util.concurrent.TimeUnit
 class KuwoApi(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val client: OkHttpClient = defaultClient,
-    private val logFile: java.io.File? = null
+    private val logFile: java.io.File? = null,
+    private val webResolver: KuwoWebResolver? = null
 ) {
 
     /** Write a line to the network diagnostic log (app external files dir). */
@@ -238,34 +239,279 @@ class KuwoApi(
         val artist = o.str("ARTIST") ?: "未知歌手"
         val album = o.str("ALBUM")?.takeIf { it.isNotBlank() }
         val durSec = o.long("DURATION") ?: 0L
+        // search.kuwo.cn/r.s carries the cover in hts_MVPIC (absolute https URL) or
+        // web_albumpic_short/big (relative to the wmvpic catalog).
+        val rawPic = o.str("hts_MVPIC") ?: o.str("web_albumpic_long")
+            ?: o.str("web_albumpic_big") ?: o.str("web_albumpic_short")
+        val pic = rawPic?.takeIf { it.startsWith("http") }
+            ?: rawPic?.let { "https://img1.kuwo.cn/wmvpic/" + it.trimStart('/') }
         return Song(
             id = id,
             title = title,
             artist = artist,
             album = album,
+            pic = pic,
             durationMs = durSec * 1000
         )
     }
 
     /**
-     * Resolve a playable stream URL for a kuwo song id. Several bitrate candidates
-     * are tried and the first one whose payload is genuine audio is returned. Some
-     * tracks (VIP/live/DRM) make antiserver send an HTML "需客户端播放" stub instead of
-     * audio, so we probe the payload and skip those, preventing the confusing
-     * "歌曲需要从kuwo音乐客户端进行播放" playback error.
+     * Resolve a playable stream URL for a kuwo song id. The authenticated
+     * `www.kuwo.cn/api/v1/www/music/playUrl` endpoint is tried first because it is
+     * the only one that returns the FULL track for free (non-VIP) songs; the
+     * anonymous antiserver only ever returns an 11-second "只能客户端播放" DRM preview
+     * for many tracks. Several bitrate candidates are then tried and the first one
+     * whose payload is genuine audio is returned. DRM/preview stubs are probed and
+     * skipped. Returns null only when no endpoint yields real audio (i.e. a
+     * VIP/paid track that cannot be unlocked without a VIP account cookie).
+     *
+     * [expectedDurationMs] (the song's known duration from search/rank metadata) is
+     * used to guard against silently handing the player a truncated ~11s DRM
+     * preview: each candidate's stream size is probed over HTTP and rejected when
+     * it is far smaller than the real track would be.
      */
-    suspend fun getPlayUrl(mid: String, br: String = "128kmp3"): String? {
-        val candidates = listOf(br, "320kmp3", "192kmp3", "128kaac").distinct()
-        var lastUrl: String? = null
-        for (b in candidates) {
-            val u = mobilePlayUrl(mid, b)
-            if (u == null) continue
-            lastUrl = u
-            if (looksLikeAudio(u)) return u
+    suspend fun getPlayUrl(mid: String, br: String = "128kmp3", expectedDurationMs: Long = 0L): String? {
+        // When a WebView resolver is present (Plan A), the OkHttp www attempt is
+        // skipped because Kuwo's WAF rejects every curl-like client anyway (the
+        // "The request is illegal!" seen in logs) while the WebView-issued
+        // same-origin XHR routinely succeeds. Trying WebView first avoids an
+        // always-failing ~1–2s hop on every song. www/antiserver remain as fallback.
+        val res = webResolver
+        if (res != null) {
+            val web = res.resolvePlayUrl(mid, br)
+            if (web != null && isUsable(web, expectedDurationMs)) {
+                logNet("PLAY", "mid=$mid webview ok")
+                return web
+            }
         }
-        logNet("PLAY", "no audio-valid url mid=$mid lastUrl=${lastUrl != null}")
-        // Last resort: return whatever antiserver gave so playback still attempts it.
-        return lastUrl
+        // 1) Authenticated www playUrl (full audio for playable songs).
+        val www = tryWwwPlayUrl(mid, br)
+        if (www != null && isUsable(www, expectedDurationMs)) {
+            logNet("PLAY", "mid=$mid www ok")
+            return www
+        }
+        // 3) Legacy anonymous antiserver candidates.
+        val candidates = listOf(br, "320kmp3", "192kmp3", "128kaac").distinct()
+        for (b in candidates) {
+            val u = mobilePlayUrl(mid, b) ?: continue
+            if (looksLikeAudio(u) && isUsable(u, expectedDurationMs)) {
+                return u
+            }
+            logNet("PLAY", "mid=$mid skip antiserver candidate br=$b")
+        }
+        logNet("PLAY", "no usable url mid=$mid")
+        return null
+    }
+
+    /**
+     * Duration sanity check: rejects the URL when it looks like Kuwo's truncated
+     * ~11s DRM preview (~180 KB at 128 kbps) rather than the full track. Prefers
+     * the MPEG frame-header duration ([Mp3Heuristics]) and falls back to a total
+     * byte-size heuristic when the header cannot be parsed. An unknown result
+     * (probe failure) is allowed through so a transient network error never
+     * blanks the player. Returns true = playable.
+     */
+    private suspend fun isUsable(url: String, expectedDurationMs: Long): Boolean {
+        val probe = probeAudio(url) ?: return true
+        val total = probe.totalBytes
+        // Absolute floor: even a genuinely short track is well above 300 KB.
+        // Kuwo previews (~11s, ~180 KB at 128 kbps) are far below it.
+        if (total < 300_000L) {
+            logNet("PROBE", "url rejected: size=${total}B (<300KB, preview stub?)")
+            return false
+        }
+        val actual = probe.durationMs
+        if (actual != null) {
+            // Any real track at 128 kbps is at least ~minutes; an 11s preview is
+            // unambiguous even without song metadata.
+            if (actual < 25_000L) {
+                logNet("PROBE", "url rejected: mp3 duration=${actual}ms (<25s, preview?)")
+                return false
+            }
+            if (expectedDurationMs > 0 && actual < expectedDurationMs * 6 / 10) {
+                logNet(
+                    "PROBE",
+                    "url rejected: mp3 duration=${actual}ms vs expected ${expectedDurationMs}ms"
+                )
+                return false
+            }
+            return true
+        }
+        // No parseable frame header: size heuristic as a fallback.
+        if (expectedDurationMs > 0) {
+            val expectedBytes = expectedDurationMs * 16L
+            if (total < expectedBytes / 3) {
+                logNet(
+                    "PROBE",
+                    "url rejected: size=${total}B vs expected~${expectedBytes}B " +
+                        "(expectedDur=${expectedDurationMs}ms)"
+                )
+                return false
+            }
+        }
+        return true
+    }
+
+    private data class AudioProbe(val totalBytes: Long, val durationMs: Long?)
+
+    /**
+     * Fetch the first ~192 KB of the stream (via `Range: bytes=0-191999`) plus the
+     * total byte count, then derive the exact MP3 duration. A second tiny request
+     * is made only when an oversized ID3v2 tag pushes the first frame past the
+     * initial chunk.
+     */
+    private suspend fun probeAudio(url: String): AudioProbe? = withContext(Dispatchers.IO) {
+        runCatching {
+            val probe = client.newBuilder()
+                .callTimeout(8, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .build()
+            val cap = 192 * 1024
+            val first = fetchChunk(probe, url, 0L, cap) ?: return@runCatching null
+            var total = first.totalBytes
+            var chunk = first.body
+            var d = Mp3Heuristics.parseDurationMs(chunk, total)
+            if (d == null) {
+                val id3 = Mp3Heuristics.id3v2Size(chunk)
+                if (id3 != null && id3 >= chunk.size - 4) {
+                    val second = fetchChunk(probe, url, id3.toLong(), cap)
+                    if (second != null) {
+                        total = second.totalBytes
+                        chunk = second.body
+                        d = Mp3Heuristics.parseDurationMs(chunk, total)
+                    }
+                }
+            }
+            AudioProbe(total, d)
+        }.getOrNull()
+    }
+
+    /** Range-fetch [count] bytes at [offset]; carries the stream's total size. */
+    private class FetchedChunk(val body: ByteArray, val totalBytes: Long)
+
+    private suspend fun fetchChunk(
+        probe: OkHttpClient,
+        url: String,
+        offset: Long,
+        count: Int
+    ): FetchedChunk? = runCatching {
+        probe.newCall(
+            Request.Builder().url(url)
+                .header("User-Agent", KuwoSecret.MOBILE_UA)
+                .header("Range", "bytes=$offset-${offset + count - 1}")
+                .build()
+        ).execute().use { r ->
+            val bodyIn = r.body ?: return@use null
+            val totalBytes = totalSizeFromContentRange(r.header("Content-Range"))
+                ?: bodyIn.contentLength()
+            val buf = bodyIn.byteStream().use { readUpTo(it, count) }
+            if (buf.isEmpty()) null else FetchedChunk(buf, totalBytes)
+        }
+    }.getOrNull()
+
+    /** Read at most [limit] bytes from [input]. */
+    private fun readUpTo(input: java.io.InputStream, limit: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream(limit.coerceAtMost(8192))
+        val buf = ByteArray(16 * 1024)
+        var remaining = limit
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size, remaining))
+            if (n < 0) break
+            out.write(buf, 0, n)
+            remaining -= n
+        }
+        return out.toByteArray()
+    }
+
+    /** Parse the total from a `Content-Range: bytes 0-0/123456` header. */
+    private fun totalSizeFromContentRange(header: String?): Long? {
+        if (header == null) return null
+        val slash = header.lastIndexOf('/')
+        if (slash < 0) return null
+        return header.substring(slash + 1).toLongOrNull()?.takeIf { it > 0 }
+    }
+
+    /**
+     * Query the authenticated web player URL. Sends the desktop web cookie and a
+     * Secret derived from the same live Hm_Iuvt token, so www.kuwo.cn accepts the
+     * request and returns a real stream URL for playable songs. Returns null when
+     * the request is rejected ("The request is illegal!" / status != 2xx), when no
+     * url is returned (VIP/paid path), or when the payload is not genuine audio.
+     */
+    private suspend fun tryWwwPlayUrl(mid: String, br: String): String? = withContext(Dispatchers.IO) {
+        ensureSession()
+        val (cookie, secret) = when {
+            overrideSecret != null && overrideCookie != null ->
+                overrideCookie!! to overrideSecret!!
+            else -> anonymousPair()
+        }
+        if (secret.isBlank()) {
+            logNet("PLAYURL", "mid=$mid www skip: blank secret")
+            return@withContext null
+        }
+        val cookieApplied = overrideCookie != null
+        val id = mid.removePrefix("MUSIC_")
+        val query = "mid=$id&type=music&httpsStatus=1&plat=web_www&from=&br=$br"
+        val hosts = listOf("www.kuwo.cn", "kuwo.cn")
+        for (host in hosts) {
+            val reqId = uuid()
+            val url = "https://$host/api/v1/www/music/playUrl?$query&reqId=$reqId"
+            val result = runCatching {
+                sessionClient.newCall(
+                    Request.Builder().url(url)
+                        .header("Cookie", cookie)
+                        .header("Secret", secret)
+                        .header("Host", host)
+                        .header("Referer", "https://www.kuwo.cn/")
+                        .header("User-Agent", KuwoSecret.DESKTOP_UA)
+                        .header("Accept", "application/json,text/plain,*/*")
+                        .header("Content-Type", "application/json")
+                        .build()
+                ).execute().use { resp ->
+                    val code = resp.code
+                    val body = resp.body?.string() ?: return@use null
+                    val root = runCatching { json.parseToJsonElement(body) }.getOrNull()
+                    val data = root?.j("data")
+                    val u = data?.str("url")
+                    val reason = when {
+                        !resp.isSuccessful -> "http$code"
+                        root == null -> "bad_json"
+                        data == null -> "no_data"
+                        else -> ""
+                    }
+                    val snippet = body.take(120).replace('\n', ' ')
+                    logNet(
+                        "PLAYURL",
+                        "mid=$id $host www br=$br code=$code url=${u != null} reason=$reason " +
+                            (if (cookieApplied) "cookie=vip" else "cookie=anon") + " body=$snippet"
+                    )
+                    if (u.isNullOrBlank() || !u.startsWith("http") || !resp.isSuccessful) null else u
+                }
+            }.getOrElse { e ->
+                logNet("PLAYURL", "mid=$id $host www EXC ${e.javaClass.simpleName}:${e.message}")
+                null
+            }
+            if (result != null) {
+                if (looksLikeAudio(result)) return@withContext result
+                logNet("PLAYURL", "mid=$id $host www url ignored (not audio)")
+            }
+        }
+        null
+    }
+
+    /** RFC4122-style uuid, roughly matching kuwo's `reqId` query parameter. */
+    private fun uuid(): String {
+        val value = java.util.concurrent.ThreadLocalRandom.current()
+        val hex = StringBuilder()
+        for (i in 0 until 32) {
+            if (i == 8 || i == 12 || i == 16 || i == 20) hex.append('-')
+            val nib = when (i) {
+                13 -> 4                                  // version 4
+                else -> value.nextInt(16)
+            }
+            hex.append("%x".format(nib))
+        }
+        return hex.toString()
     }
 
     /** Quick range probe: is the payload real audio (vs an HTML/DRM page)? */
@@ -303,8 +549,12 @@ class KuwoApi(
         out
     }
 
-    /** Fetch standard LRC lyrics (new h5 endpoint, stable & public). */
-    suspend fun getLyrics(musicId: String): List<LyricLine> {
+    /**
+     * Fetch standard LRC lyrics (new h5 endpoint, stable & public). Runs on the
+     * IO dispatcher (the URL fetch is blocking) and ALWAYS logs the outcome,
+     * including failures, so a playback run can be diagnosed from kuwo_api.log.
+     */
+    suspend fun getLyrics(musicId: String): List<LyricLine> = withContext(Dispatchers.IO) {
         val url = "https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${urlEncode(musicId)}&httpsStatus=1"
         // m.kuwo.cn is cookie-independent; sending a logged-in account cookie can
         // make it return an empty lrclist, so use a neutral cookie here.
@@ -312,9 +562,14 @@ class KuwoApi(
         if (raw.isNullOrBlank() && overrideCookie != null) {
             raw = fetchLrc(url, "")
         }
-        val lines = parseLrcJson(raw ?: return emptyList())
-        logNet("LYRICS", "mid=$musicId -> ${lines.size} lines, raw=${raw?.length ?: -1}b")
-        return lines
+        val snippet = raw?.replace('\n', ' ')?.take(160) ?: ""
+        if (raw.isNullOrBlank()) {
+            logNet("LYRICS", "mid=$musicId -> fetch returned blank/null (${snippet.take(40)})")
+            return@withContext emptyList()
+        }
+        val lines = parseLrcJson(raw)
+        logNet("LYRICS", "mid=$musicId -> ${lines.size} lines, raw=${raw.length}b snippet=$snippet")
+        lines
     }
 
     private fun fetchLrc(url: String, cookie: String): String? =

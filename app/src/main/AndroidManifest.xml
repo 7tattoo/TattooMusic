@@ -53,11 +53,6 @@
             </intent-filter>
         </activity>
 
-        <!-- In-app browser login for the Kuwo account -->
-        <activity
-            android:name=".ui.KuwoLoginActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
         <service
             android:name=".player.PlayerService"
             android:exported="true"

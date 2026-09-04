@@ -17,7 +17,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
@@ -46,6 +49,25 @@ class LocalMusicRepository(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cacheJson = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Songs shown in the UI's "歌曲" list: all scanned songs minus those whose
+     * directory is present in [AppSettings.ignoredDirs]. Combines reactively, so
+     * toggling a directory in Settings -> 目录过滤 hides/shows its songs
+     * immediately (no rescan required).
+     */
+    val visibleSongs: StateFlow<List<Song>> =
+        combine(_songs, settings.ignoredDirs) { all, ignored ->
+            if (ignored.isEmpty()) {
+                all
+            } else {
+                val ign = ignored.asSequence().filter { it.isNotBlank() }.map { it.trimEnd('/') }.toList()
+                all.filter { s ->
+                    val p = s.localPath ?: return@filter true
+                    ign.none { p.startsWith(it) }
+                }
+            }
+        }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     init {
         // Restore the last scan from disk so music is shown right after launch
@@ -100,7 +122,6 @@ class LocalMusicRepository(
                         if (!f.isFile) continue
                         if (f.extension.lowercase() !in supportedExt) continue
                         val path = f.absolutePath
-                        if (ignored.any { path.startsWith(it) }) continue
                         list.add(buildSong(path, meta))
                         if (list.size % 20 == 0) _songs.value = list.toList()
                     }
@@ -210,7 +231,6 @@ class LocalMusicRepository(
                     val pathFile = File(data)
                     if (pathFile.extension.lowercase() !in supportedExt) continue
                     if (rootEnabled && !roots.any { data.startsWith(it) }) continue
-                    if (ignored.any { data.startsWith(it) }) continue
                     val artUri = if (albumIdC >= 0) {
                         ContentUris.withAppendedId(
                             Uri.parse("content://media/external/audio/albumart"),

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.spotify.music.AppContainer
+import java.io.File
 
 @Composable
 fun SettingsScreen(container: AppContainer, modifier: Modifier = Modifier) {
@@ -54,7 +57,7 @@ fun SettingsScreen(container: AppContainer, modifier: Modifier = Modifier) {
 
     LazyColumn(modifier.fillMaxSize()) {
         item { Section("睡眠定时器", Icons.Rounded.Schedule, subtitle = sleepSubtitle(container)) { showSleep = true } }
-        item { Section("目录过滤", Icons.Rounded.Lyrics, subtitle = "过滤本地扫描时忽略的音乐目录") { showDirFilter = true } }
+        item { Section("目录过滤", Icons.Rounded.Lyrics, subtitle = "勾选目录，其内歌曲从「歌曲」列表隐藏") { showDirFilter = true } }
 
         item {
             SettingToggle(
@@ -174,13 +177,17 @@ private fun SleepTimerDialog(container: AppContainer, onDismiss: () -> Unit) {
 @Composable
 private fun DirFilterDialog(container: AppContainer, onDismiss: () -> Unit) {
     val ignored by container.settings.ignoredDirs.collectAsState()
-    var input by remember { mutableStateOf("") }
-
-    fun add() {
-        if (input.isNotBlank()) {
-            container.settings.toggleIgnoreDir(input.trim(), true)
-            input = ""
+    val songs by container.localMusicRepository.songs.collectAsState()
+    // 自动列出扫描到的、包含音乐文件的目录，并附带歌曲数。
+    val dirs = remember(songs) {
+        val m = LinkedHashMap<String, Int>()
+        for (s in songs) {
+            val d = s.localPath?.let { File(it).parentFile?.absolutePath }?.trimEnd('/')
+            if (!d.isNullOrBlank()) m[d] = (m[d] ?: 0) + 1
         }
+        m.entries
+            .map { DirEntry(path = it.key, count = it.value) }
+            .sortedBy { it.path }
     }
 
     AlertDialog(
@@ -188,35 +195,52 @@ private fun DirFilterDialog(container: AppContainer, onDismiss: () -> Unit) {
         title = { Text("目录过滤") },
         text = {
             Column(Modifier.fillMaxWidth()) {
-                Text("被忽略的目录不会在本地扫描中显示。可输入目录路径后添加。",
+                Text("勾选目录后，其内音乐将自动从「歌曲」列表隐藏。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextField(value = input, onValueChange = { input = it },
-                        label = { Text("目录路径") }, modifier = Modifier.weight(1f))
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { add() }) { Text("添加") }
-                }
-                Spacer(Modifier.height(6.dp))
-                if (ignored.isEmpty()) {
-                    Text("暂无过滤目录", style = MaterialTheme.typography.bodySmall,
+                if (dirs.isEmpty()) {
+                    Text("尚未扫描到音乐目录，请先在「音乐」页扫描本地音乐后再来设置。",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                ignored.forEach { dir ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(dir, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        IconButton(onClick = { container.settings.toggleIgnoreDir(dir, false) }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "移除", Modifier.size(18.dp))
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                        items(dirs, key = { it.path }) { d ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable { container.settings.toggleIgnoreDir(d.path, d.path !in ignored) }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = d.path in ignored,
+                                    onCheckedChange = { container.settings.toggleIgnoreDir(d.path, it) }
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(d.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                    Text(d.path, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text("${d.count}首", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { add(); onDismiss() }) { Text("完成") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+/** A scanned directory that contains music, with its song count. */
+private data class DirEntry(val path: String, val count: Int) {
+    val name: String get() = File(path).name.ifBlank { path }
 }
 
 @Composable

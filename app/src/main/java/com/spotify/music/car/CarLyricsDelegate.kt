@@ -1,8 +1,8 @@
 package com.spotify.music.car
 
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.support.v4.media.session.MediaSessionCompat
-import androidx.media3.common.MediaMetadata
 
 /** Field/status constants for the vivo 智能车载 (JoviInCar) lyrics protocol. */
 object CarLyricsConstants {
@@ -36,7 +36,9 @@ object CarLyricsDelegate {
         currentLine: String?,
         wholeLrc: String?,
         isLoading: Boolean,
-        enabled: Boolean
+        enabled: Boolean,
+        artBitmap: Bitmap? = null,
+        artUri: String? = null
     ) {
         val base = android.support.v4.media.MediaMetadataCompat.Builder()
             .putText("android.media.metadata.TITLE", title ?: "")
@@ -45,6 +47,20 @@ object CarLyricsDelegate {
             .build()
 
         val builder = android.support.v4.media.MediaMetadataCompat.Builder(base)
+
+        // Album art: a Bitmap is the most reliable for the car's now-playing card.
+        // A URI is a lightweight fallback that the launcher may fetch.
+        if (artBitmap != null) {
+            builder
+                .putBitmap("android.media.metadata.ALBUM_ART", artBitmap)
+                .putBitmap("android.media.metadata.ART", artBitmap)
+                .putBitmap("android.media.metadata.DISPLAY_ICON", artBitmap)
+        }
+        if (!artUri.isNullOrBlank()) {
+            builder
+                .putString("android.media.metadata.ALBUM_ART_URI", artUri)
+                .putString("android.media.metadata.DISPLAY_ICON_URI", artUri)
+        }
 
         if (enabled) {
             // current line: never send "-1"

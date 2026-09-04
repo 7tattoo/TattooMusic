@@ -1,5 +1,8 @@
 package com.spotify.music.car
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.os.Bundle
 import android.net.Uri
 import androidx.media.MediaBrowserServiceCompat
@@ -17,6 +20,7 @@ import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * uCar 车载媒体浏览器服务。
@@ -31,6 +35,13 @@ class CarMediaBrowserService : MediaBrowserServiceCompat() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var container: com.spotify.music.AppContainer
     private lateinit var mediaSession: MediaSessionCompat
+
+    // Album art for the car now-playing card: cached per song so the 150ms mirror
+    // loop never re-decodes. Decoded on an IO thread from the local file's embedded
+    // picture and downscaled so the Parcelable stays well under the Binder limit.
+    @Volatile
+    private var artBitmap: Bitmap? = null
+    private var artKey: String? = null
 
     private val playAction = android.support.v4.media.session.PlaybackStateCompat.ACTION_PLAY
     private val pauseAction = android.support.v4.media.session.PlaybackStateCompat.ACTION_PAUSE
@@ -79,6 +90,12 @@ class CarMediaBrowserService : MediaBrowserServiceCompat() {
                 mediaSession.setPlaybackState(pb)
 
                 val song = pc.currentSong.value
+                val artKeyNow = song?.let { if (it.source == SongSource.LOCAL) "local:${it.localPath}" else null }
+                if (artKeyNow != null && artKeyNow != artKey) {
+                    artKey = artKeyNow
+                    artBitmap = null
+                    scope.launch { artBitmap = withContext(Dispatchers.IO) { loadEmbeddedArt(song) } }
+                }
                 CarLyricsDelegate.update(
                     session = mediaSession,
                     title = song?.title,
@@ -86,10 +103,35 @@ class CarMediaBrowserService : MediaBrowserServiceCompat() {
                     currentLine = pc.currentLyricText.value,
                     wholeLrc = pc.wholeLrc,
                     isLoading = pc.lyricStatus.value == LyricStatus.LOADING,
-                    enabled = enabled
+                    enabled = enabled,
+                    artBitmap = artBitmap,
+                    artUri = song?.pic
                 )
                 delay(150)
             }
+        }
+    }
+
+    /** Extract + downscale the current song's embedded art for the car card. */
+    private fun loadEmbeddedArt(song: Song): Bitmap? {
+        if (song.source != SongSource.LOCAL) return null
+        val path = song.localPath ?: return null
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            val pic = retriever.embeddedPicture ?: return null
+            val bmp = BitmapFactory.decodeByteArray(pic, 0, pic.size) ?: return null
+            val w = bmp.width; val h = bmp.height
+            val largest = maxOf(w, h)
+            if (largest <= 512) bmp else {
+                val ns = 512f / largest
+                Bitmap.createScaledBitmap(bmp, (w * ns).toInt().coerceAtLeast(1), (h * ns).toInt().coerceAtLeast(1), true)
+                    .also { if (it !== bmp) bmp.recycle() }
+            }
+        } catch (e: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 

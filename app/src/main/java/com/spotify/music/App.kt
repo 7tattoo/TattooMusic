@@ -6,8 +6,13 @@ import android.content.Context
 /** Simple manual DI container so service and UI share one set of objects. */
 class AppContainer(context: Context) {
     val settings = com.spotify.music.data.AppSettings(context)
-    val api = com.spotify.music.data.api.KuwoApi(
+    val webResolver = com.spotify.music.data.api.KuwoWebResolver(
+        context,
         logFile = java.io.File(context.getExternalFilesDir(null), "kuwo_api.log")
+    )
+    val api = com.spotify.music.data.api.KuwoApi(
+        logFile = java.io.File(context.getExternalFilesDir(null), "kuwo_api.log"),
+        webResolver = webResolver
     )
     val embeddedLyricsReader = com.spotify.music.data.local.EmbeddedLyricsReader()
     val lyricsRepository = com.spotify.music.data.repo.LyricsRepository(api, embeddedLyricsReader)
@@ -17,6 +22,16 @@ class AppContainer(context: Context) {
     val playlistRepository = com.spotify.music.data.repo.PlaylistRepository(context)
     val usbController = com.spotify.music.usb.UsbAudioController(context, settings)
     val sleepTimer = com.spotify.music.service.SleepTimer()
+
+    /**
+     * Apply a kuwo account cookie to every consumer that needs the logged-in
+     * session: the OkHttp API client and the WebView stream resolver (both rely
+     * on the same account session to resolve VIP tracks).
+     */
+    fun applyKuwoAccount(cookie: String?) {
+        api.setAccountCookie(cookie)
+        webResolver.syncAccountCookie(cookie)
+    }
 }
 
 class App : Application() {
@@ -28,7 +43,7 @@ class App : Application() {
         container = AppContainer(this)
         // Re-apply a previously saved kuwo login cookie so the API (and the
         // home feed) uses the account session across app restarts.
-        container.settings.kuwoCookie.value?.let { container.api.setAccountCookie(it) }
+        container.settings.kuwoCookie.value?.let { container.applyKuwoAccount(it) }
         installCrashLogger()
         wireCallbacks()
     }

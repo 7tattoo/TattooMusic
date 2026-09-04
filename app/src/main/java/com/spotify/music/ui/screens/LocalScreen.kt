@@ -66,7 +66,7 @@ fun LocalScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val songs by container.localMusicRepository.songs.collectAsState()
+    val songs by container.localMusicRepository.visibleSongs.collectAsState()
     val isScanning by container.localMusicRepository.isScanning.collectAsState()
     val sort by container.settings.localSort.collectAsState()
     val displayed = remember(songs, sort) { applyLocalSort(songs, sort) }

@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.rounded.Headphones
-import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Settings
@@ -48,7 +47,6 @@ import androidx.compose.ui.unit.dp
 import com.spotify.music.App
 import com.spotify.music.AppContainer
 import com.spotify.music.ui.components.PlayerBar
-import com.spotify.music.ui.screens.HomeScreen
 import com.spotify.music.ui.screens.LandscapePlayerScreen
 import com.spotify.music.ui.screens.LocalScreen
 import com.spotify.music.ui.screens.MineScreen
@@ -69,9 +67,8 @@ internal fun Context.findActivity(): Activity? {
 }
 
 enum class MainTab(val label: String, val icon: ImageVector) {
-    HOME("首页", Icons.Rounded.Home),
+    LOCAL("音乐", Icons.Rounded.LibraryMusic),
     MINE("我的", Icons.Rounded.Person),
-    LOCAL("本地", Icons.Rounded.LibraryMusic),
     SETTINGS("设置", Icons.Rounded.Settings)
 }
 
@@ -82,9 +79,9 @@ fun MusicApp() {
     val activity = context.findActivity()
     val container: AppContainer = App.container(context)
 
-    var tab by rememberSaveable { mutableStateOf(MainTab.HOME.name) }
+    var tab by rememberSaveable { mutableStateOf(MainTab.LOCAL.name) }
     var playerOpen by rememberSaveable { mutableStateOf(false) }
-    val selectedTab = MainTab.valueOf(tab)
+    val selectedTab = runCatching { MainTab.valueOf(tab) }.getOrDefault(MainTab.LOCAL)
 
     // ---- side-swipe / system back handling ----
     var lastBackPress by remember { mutableStateOf(0L) }
@@ -122,9 +119,11 @@ fun MusicApp() {
     }
 
     val configuration = LocalConfiguration.current
+    val anywayWide = configuration.screenWidthDp > configuration.screenHeightDp
+    val useLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE || anywayWide
 
     if (playerOpen) {
-        if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        if (useLandscape) {
             LandscapePlayerScreen(
                 container = container,
                 onBack = { playerOpen = false }
@@ -162,9 +161,8 @@ private fun MainShell(
     ) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (selectedTab) {
-                MainTab.HOME -> HomeScreen(container, onOpenPlayer)
-                MainTab.MINE -> MineScreen(container, onOpenPlayer)
                 MainTab.LOCAL -> LocalScreen(container, onOpenPlayer)
+                MainTab.MINE -> MineScreen(container, onOpenPlayer)
                 MainTab.SETTINGS -> SettingsScreen(container)
             }
         }

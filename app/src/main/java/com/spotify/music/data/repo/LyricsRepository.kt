@@ -30,7 +30,16 @@ class LyricsRepository(
             val raw = path?.let { embeddedReader.readLyrics(it) }
             if (!raw.isNullOrBlank()) {
                 val lines = LrcTextParser.parse(raw)
-                if (lines.isNotEmpty()) return@withContext lines
+                if (lines.isNotEmpty()) {
+                    // Unsynchronized embedded lyrics (e.g. a FLAC LYRICS tag with
+                    // plain text, no [mm:ss] tags) parse to lines all at time 0, so
+                    // the scroller has no timeline and can't scroll. Synthesize an
+                    // even spacing across the track duration to make them scroll.
+                    if (lines.all { it.timeMs == 0L }) {
+                        return@withContext synthesizeTiming(lines, song.durationMs)
+                    }
+                    return@withContext lines
+                }
             }
             // Network fallback: match the song by title (and artist) and pull lyrics.
             val keyword = listOfNotNull(song.title, song.artist)
@@ -44,6 +53,19 @@ class LyricsRepository(
             }
             emptyList()
         }
+
+    /** Evenly distribute untimed lines across the song duration so they scroll. */
+    private fun synthesizeTiming(lines: List<LyricLine>, durationMs: Long): List<LyricLine> {
+        if (lines.isEmpty()) return lines
+        val n = lines.size
+        if (durationMs <= 0) {
+            // No known duration: step each line by 3s so the scroller still advances.
+            return lines.mapIndexed { i, l -> LyricLine(3000L * i, l.text) }
+        }
+        val leadIn = 1500L // small gap at the start
+        val span = (durationMs - leadIn).coerceAtLeast(0L)
+        return lines.mapIndexed { i, l -> LyricLine(leadIn + span * i / n, l.text) }
+    }
 
     /** Reconstruct a standard LRC string from parsed lines (for car screen lyrics). */
     fun toLrcText(lines: List<LyricLine>): String {

@@ -156,23 +156,33 @@ class PlayerController(
         playbackBegin(1)
         startForegroundPlayback()
         _currentSong.value = song
-        loadLyrics(song)
+        // Reset the timeline immediately so the UI shows the NEW track's progress
+        // from 0 even while it is still resolving/failed, instead of freezing on
+        // the previous track's position (fixes the "卡住时进度条还是上一首" bug).
+        _positionMs.value = positionMs
+        if (song.durationMs > 0) _durationMs.value = song.durationMs
         scope.launch {
             runCatching {
-                val mediaItem = resolveMediaItem(song)
+                val mediaItem = withTimeoutOrNull(15_000) { resolveMediaItem(song) }
                 if (mediaItem == null) {
                     _events.tryEmit("暂时无法获取该歌曲的播放地址")
                     _busy.value = PlayerBusy.ERROR
                     _error.value = if (song.source == SongSource.LOCAL) "无法读取本地文件" else "获取播放地址失败"
+                    // lyrics: still do it so the UI is not stuck in LOADING forever
+                    loadLyrics(song)
                     return@launch
                 }
                 _durationMs.value = if (song.durationMs > 0) song.durationMs else exoPlayer.duration
                 exoPlayer.setMediaItem(mediaItem, positionMs)
                 exoPlayer.prepare()
                 exoPlayer.play()
+                // Lyrics can load after audio is already playing; this avoids "lyric load timeout"
+                // taking down the entire playback on first app launch when disk/network is slow.
+                loadLyrics(song)
             }.onFailure { e ->
                 _busy.value = PlayerBusy.ERROR
                 _error.value = e.localizedMessage ?: "播放失败"
+                loadLyrics(song)
             }
         }
     }
@@ -182,30 +192,38 @@ class PlayerController(
         val clipped = startIndex.coerceIn(0, songs.lastIndex)
         startForegroundPlayback()
         _currentSong.value = songs[clipped]
+        _positionMs.value = 0L
+        if (songs[clipped].durationMs > 0) _durationMs.value = songs[clipped].durationMs
         loadLyrics(songs[clipped])
         playbackBegin(songs.size)
         scope.launch {
             runCatching {
-                val items = ArrayList<MediaItem>()
-                for (song in songs) {
-                    resolveMediaItem(song)?.let { items.add(it) }
-                }
-                if (items.isEmpty()) {
-                    _busy.value = PlayerBusy.ERROR
-                    _error.value = "无法加载音频文件"
-                    return@launch
-                }
-                // locate the requested start song inside the resolved (non-null) items
-                var start = clipped.coerceIn(0, items.lastIndex)
-                for (i in items.indices) {
-                    if (items[i].localConfiguration?.tag == songs[clipped]) {
-                        start = i
-                        break
+                // Ordered scan starting at the requested song, wrapping around:
+                // first resolvable track starts playback immediately, the rest are
+                // resolved in the background and appended as they become ready. This
+                // removes the old behaviour of resolving EVERY song up front (which
+                // made a big queue take many seconds to begin).
+                val n = songs.size
+                val order = (0 until n).map { (clipped + it) % n }
+                var started = false
+                for (idx in order) {
+                    val song = songs[idx]
+                    val item = withTimeoutOrNull(15_000) { resolveMediaItem(song) }
+                    if (item == null) continue
+                    if (!started) {
+                        _currentSong.value = (item.localConfiguration?.tag as? Song) ?: song
+                        exoPlayer.setMediaItem(item)
+                        exoPlayer.prepare()
+                        exoPlayer.play()
+                        started = true
+                    } else {
+                        exoPlayer.addMediaItem(item)
                     }
                 }
-                exoPlayer.setMediaItems(items, start, 0L)
-                exoPlayer.prepare()
-                exoPlayer.play()
+                if (!started) {
+                    _busy.value = PlayerBusy.ERROR
+                    _error.value = "无法加载音频文件"
+                }
             }.onFailure { e ->
                 _busy.value = PlayerBusy.ERROR
                 _error.value = e.localizedMessage ?: "播放失败"
@@ -330,7 +348,7 @@ class PlayerController(
                 val cached = urlCache[song.id]
                 if (cached != null) Uri.parse(cached)
                 else {
-                    val url = api.getPlayUrl(song.id)
+                    val url = api.getPlayUrl(song.id, expectedDurationMs = song.durationMs)
                     if (url != null) {
                         urlCache[song.id] = url
                         Uri.parse(url)
@@ -371,8 +389,12 @@ class PlayerController(
         lyricJob = scope.launch {
             _lyricStatus.value = LyricStatus.LOADING
             // Cap lyric resolution (esp. the network fallback for local songs) so the
-            // UI never gets stuck showing "正在显示歌词" at cold start.
-            val lines = withTimeoutOrNull(6000) { lyricsRepository.load(song) }.orEmpty()
+            // UI never gets stuck showing "正在显示歌词" at cold start. runCatching
+            // also swallows non-timeout exceptions (e.g. a first-launch IO/read error),
+            // which otherwise would leave LyricStatus.LOADING forever.
+            val lines = runCatching {
+                withTimeoutOrNull(6000) { lyricsRepository.load(song) }
+            }.getOrNull().orEmpty()
             _lyrics.value = lines
             _lyricStatus.value = if (lines.isEmpty()) LyricStatus.NONE else LyricStatus.READY
             // track current lyric index

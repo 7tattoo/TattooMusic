@@ -17,11 +17,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -48,8 +48,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.spotify.music.AppContainer
 import com.spotify.music.data.model.LocalPlaylist
-import com.spotify.music.data.model.FavoritePlaylist
 import com.spotify.music.ui.SectionHeader
+import com.spotify.music.ui.SongCover
 import com.spotify.music.ui.SongRow
 
 @Composable
@@ -59,35 +59,25 @@ fun MineScreen(
     modifier: Modifier = Modifier
 ) {
     val selfPlaylists by container.playlistRepository.selfPlaylists.collectAsState()
-    val favorites by container.playlistRepository.favorites.collectAsState()
     val recent by container.playlistRepository.recent.collectAsState()
 
     var selfExpanded by remember { mutableStateOf(false) }
-    var favExpanded by remember { mutableStateOf(false) }
     var showNewDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
-    var showLoginDialog by remember { mutableStateOf(false) }
-    var showAccountSheet by remember { mutableStateOf(false) }
     var activeSelfPlaylist by remember { mutableStateOf<LocalPlaylist?>(null) }
-    var activeFavPlaylist by remember { mutableStateOf<FavoritePlaylist?>(null) }
 
     val context = LocalContext.current
-
-    val loggedIn by container.settings.kuwoCookie.collectAsState()
-    val nickname by container.settings.kuwoNickname.collectAsState()
-    val isLoggedIn = !loggedIn.isNullOrBlank()
-    val displayName = nickname ?: "刺青用户"
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)
     ) {
-        // top 1/5 account header
+        // top header
         item {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(190.dp)
+                    .height(120.dp)
                     .background(
                         androidx.compose.ui.graphics.Brush.verticalGradient(
                             listOf(
@@ -96,8 +86,7 @@ fun MineScreen(
                             )
                         )
                     )
-                    .padding(24.dp)
-                    .clickable { if (isLoggedIn) showAccountSheet = true else showLoginDialog = true },
+                    .padding(24.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -109,15 +98,7 @@ fun MineScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.width(16.dp))
-                    Column {
-                        Text(displayName, style = MaterialTheme.typography.titleLarge)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            if (isLoggedIn) "已登录酷我账号 · 点击查看" else "点击登录酷我账号",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text("刺青音乐用户", style = MaterialTheme.typography.titleLarge)
                 }
             }
         }
@@ -162,44 +143,6 @@ fun MineScreen(
             }
         }
 
-        // 收藏歌单 (expandable)
-        item {
-            ExpandableItem(
-                title = "收藏歌单",
-                count = favorites.size,
-                icon = Icons.Rounded.Favorite,
-                expanded = favExpanded,
-                onToggle = { favExpanded = !favExpanded }
-            )
-        }
-        if (favExpanded) {
-            if (favorites.isEmpty()) {
-                item {
-                    Text("暂无收藏歌单，可在首页推荐歌单中点击「收藏」添加",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 40.dp).padding(end = 16.dp).padding(vertical = 8.dp))
-                }
-            }
-            favorites.forEach { pl ->
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { activeFavPlaylist = pl }
-                            .padding(start = 40.dp).padding(end = 16.dp).padding(top = 4.dp).padding(bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Rounded.Favorite, contentDescription = null, modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Text(pl.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-            }
-        }
-
-        item { HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)) }
-
         // 最近播放
         item { SectionHeader("最近播放") }
         if (recent.isEmpty()) {
@@ -223,12 +166,6 @@ fun MineScreen(
     }
     if (showImportDialog) {
         ImportPlaylistDialog(container, context) { showImportDialog = false }
-    }
-    if (showLoginDialog) {
-        KuwoLoginDialog(container) { showLoginDialog = false }
-    }
-    if (showAccountSheet) {
-        KuwoAccountSheet(container) { showAccountSheet = false }
     }
     activeSelfPlaylist?.let { pl ->
         ModalSelfPlaylistSheet(pl, container, onOpenPlayer) { activeSelfPlaylist = null }
@@ -302,108 +239,106 @@ private fun ImportPlaylistDialog(container: AppContainer, context: android.conte
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun ModalSelfPlaylistSheet(pl: LocalPlaylist, container: AppContainer, onOpenPlayer: () -> Unit, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    // Resolve the LIVE playlist by id so additions/removals reflect immediately even
+    // though the caller captured a snapshot LocalPlaylist when it opened.
+    val playlists by container.playlistRepository.selfPlaylists.collectAsState()
+    val live = playlists.firstOrNull { it.id == pl.id } ?: pl
+    var showAddSongs by remember { mutableStateOf(false) }
+
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                Text(pl.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                androidx.compose.material3.IconButton(onClick = { container.playlistRepository.deletePlaylist(pl.id); onDismiss() }) {
+                Text(live.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showAddSongs = true }) { Text("添加本地音乐") }
+                androidx.compose.material3.IconButton(onClick = {
+                    container.playlistRepository.deletePlaylist(live.id); onDismiss()
+                }) {
                     Icon(Icons.Rounded.Delete, contentDescription = "删除歌单")
                 }
             }
             androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().height(400.dp)) {
-                if (pl.songs.isEmpty()) {
+                if (live.songs.isEmpty()) {
                     item { Text("歌单为空", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(20.dp)) }
                 }
-                items(pl.songs) { song ->
-                    SongRow(song, onClick = {
-                        container.playerController.playQueue(pl.songs, pl.songs.indexOf(song))
-                        onOpenPlayer(); onDismiss()
-                    })
+                items(live.songs) { song ->
+                    SongRow(
+                        song = song,
+                        trailing = {
+                            androidx.compose.material3.IconButton(onClick = {
+                                container.playlistRepository.removeFromPlaylist(live.id, song.id)
+                                Toast.makeText(context, "已移出歌单", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Rounded.Delete, contentDescription = "移出歌单", Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        },
+                        onClick = {
+                            container.playerController.playQueue(live.songs, live.songs.indexOf(song))
+                            onOpenPlayer(); onDismiss()
+                        }
+                    )
                 }
             }
         }
     }
+
+    if (showAddSongs) {
+        AddLocalSongsDialog(pl = live, container = container) { showAddSongs = false }
+    }
 }
 
 @Composable
-private fun KuwoLoginDialog(container: AppContainer, onDismiss: () -> Unit) {
+private fun AddLocalSongsDialog(pl: LocalPlaylist, container: AppContainer, onDismiss: () -> Unit) {
+    val localSongs by container.localMusicRepository.visibleSongs.collectAsState()
+    val playlists by container.playlistRepository.selfPlaylists.collectAsState()
+    val current = playlists.firstOrNull { it.id == pl.id }?.songs.orEmpty()
+    val inSet = remember(current) { current.map { it.id }.toSet() }
     val context = LocalContext.current
-    var cookie by remember { mutableStateOf("") }
-    var nickname by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("登录酷我账号") },
+        title = { Text("添加到「${pl.name}」") },
         text = {
-            Column {
-                TextButton(onClick = {
-                    context.startActivity(android.content.Intent(context, com.spotify.music.ui.KuwoLoginActivity::class.java))
-                    onDismiss()
-                }) {
-                    Text("🌐 使用内置浏览器直接登录（免复制 Cookie）")
-                }
-                androidx.compose.material3.HorizontalDivider()
-                Spacer(Modifier.height(6.dp))
-                Text("或粘贴网页端 Cookie：在电脑浏览器打开 https://www.kuwo.cn 并登录，按下 F12 → 应用/Application → Cookies，复制全部 Cookie 值粘贴到下面（保留 Hm_Iuvt_ 开头的令牌）。",
-                    style = MaterialTheme.typography.bodySmall,
+            Column(Modifier.fillMaxWidth()) {
+                Text("点选要加入歌单的本地歌曲：", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(10.dp))
-                TextField(
-                    value = cookie,
-                    onValueChange = { cookie = it },
-                    label = { Text("Cookie") },
-                    modifier = Modifier.fillMaxWidth().height(120.dp)
-                )
                 Spacer(Modifier.height(8.dp))
-                TextField(
-                    value = nickname,
-                    onValueChange = { nickname = it },
-                    label = { Text("昵称（可选）") },
-                    singleLine = true
-                )
+                if (localSongs.isEmpty()) {
+                    Text("暂无本地音乐，请先在「音乐」页扫描后再导入。", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().height(340.dp)) {
+                        items(localSongs) { s ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    if (s.id !in inSet) {
+                                        container.playlistRepository.addToPlaylist(pl.id, s)
+                                        Toast.makeText(context, "已添加「${s.title}」", Toast.LENGTH_SHORT).show()
+                                    }
+                                }.padding(horizontal = 4.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SongCover(model = s.pic, modifier = Modifier.size(42.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(s.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(s.artist, style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Icon(
+                                    if (s.id in inSet) Icons.Rounded.Check else Icons.Rounded.Add,
+                                    contentDescription = null,
+                                    tint = if (s.id in inSet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         },
-        confirmButton = {
-            TextButton(onClick = {
-                if (cookie.isBlank()) {
-                    Toast.makeText(context, "请先粘贴 Cookie", Toast.LENGTH_SHORT).show()
-                } else {
-                    container.settings.setKuwoAccount(cookie, nickname)
-                    container.api.setAccountCookie(cookie)
-                    Toast.makeText(context, "已登录酷我账号", Toast.LENGTH_SHORT).show()
-                    onDismiss()
-                }
-            }) { Text("登录") }
-        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun KuwoAccountSheet(container: AppContainer, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val nickname by container.settings.kuwoNickname.collectAsState()
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp))
-                Text(nickname ?: "刺青用户", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("已使用酷我账号 Cookie 在线登录", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(16.dp))
-            TextButton(onClick = {
-                container.settings.clearKuwoAccount()
-                container.api.setAccountCookie(null)
-                Toast.makeText(context, "已退出登录", Toast.LENGTH_SHORT).show()
-                onDismiss()
-            }) {
-                Text("退出登录")
-            }
-        }
-    }
 }

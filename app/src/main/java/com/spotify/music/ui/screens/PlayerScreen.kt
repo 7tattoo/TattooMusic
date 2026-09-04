@@ -54,6 +54,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -320,9 +321,11 @@ private fun PlayerSleepDialog(container: AppContainer, onDismiss: () -> Unit) {
     )
 }
 
-// ---------------- Landscape player (参考 H1.png, adapts to square/wide car) ----------------
+// ---------------- Landscape player (参考 3.png: 左专辑图/歌词 + 右信息控制) ----------------
 
-@OptIn(ExperimentalMaterial3Api::class)
+private val CarPinkTop = Color(0xFFE9A8BC)
+private val CarPinkBottom = Color(0xFFD27E96)
+
 @Composable
 fun LandscapePlayerScreen(
     container: AppContainer,
@@ -336,93 +339,236 @@ fun LandscapePlayerScreen(
     BoxWithConstraints(
         modifier = modifier.fillMaxSize().background(
             Brush.linearGradient(
-                listOf(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    MaterialTheme.colorScheme.background
-                )
+                colors = listOf(CarPinkTop, CarPinkBottom)
             )
         )
     ) {
-        val ratio = maxWidth / maxHeight
-        val wide = ratio >= 1.35f
-        if (wide) {
+        val landscape = maxWidth >= maxHeight
+        if (landscape) {
             Row(Modifier.fillMaxSize()) {
-                // left pane: cover by default, tap toggles lyrics
-                Box(Modifier.weight(1f).fillMaxSize().clickable { showLyrics = !showLyrics }) {
-                    if (showLyrics) {
-                        LyricsView(pc, Modifier.fillMaxSize())
-                    } else {
-                        song?.pic?.let { pic ->
-                            AsyncImage(
-                                model = pic,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .padding(24.dp)
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(28.dp)),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                            )
+                // ---------------- LEFT: 专辑图 (点击切换动态歌词) ----------------
+                Column(
+                    Modifier.weight(1.08f).fillMaxSize()
+                        .padding(start = 28.dp, top = 40.dp, bottom = 36.dp)
+                ) {
+                    Box(
+                        Modifier.fillMaxWidth().weight(1f)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .clickable { showLyrics = !showLyrics },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (showLyrics) {
+                            LyricsView(pc, Modifier.fillMaxSize())
+                        } else {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                // Keep the artwork SQUARE centered in the tall left
+                                // column; fitting it to min(maxWidth,maxHeight) avoids
+                                // stretching the cover into a tall rectangle.
+                                BoxWithConstraints(Modifier.fillMaxSize().padding(16.dp)) {
+                                    val side = minOf(maxWidth, maxHeight)
+                                    SongCover(
+                                        model = song?.pic,
+                                        modifier = Modifier.size(side).aspectRatio(1f)
+                                            .clip(RoundedCornerShape(18.dp))
+                                    )
+                                }
+                            }
                         }
+                        Text(
+                            text = if (showLyrics) "点击查看专辑" else "点击查看动态歌词",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)
+                        )
                     }
-                    // tap hint
+                    // 元数据行 (专辑名, 轻量)
+                    Spacer(Modifier.height(12.dp))
                     Text(
-                        text = if (showLyrics) "点击返回封面" else "点击显示滚动歌词",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                        text = song?.album?.takeIf { it.isNotBlank() } ?: " ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-                // right pane: controls
+
+                // ---------------- RIGHT: 歌名/歌手/功能键/进度/控制 ----------------
                 Column(
-                    Modifier.weight(1f).fillMaxSize().padding(horizontal = 24.dp, vertical = 20.dp),
+                    Modifier.weight(1f).fillMaxSize()
+                        .padding(end = 32.dp, top = 56.dp, bottom = 44.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    SongHeader(song)
-                    Spacer(Modifier.height(24.dp))
-                    ProgressRow(pc)
-                    TransportControls(pc, Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(16.dp))
-                    BottomActionRow(pc, container, Modifier.fillMaxWidth())
+                    // 返回
+                    Box(Modifier.fillMaxWidth()) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.align(Alignment.TopStart).size(44.dp)
+                        ) {
+                            Icon(Icons.Rounded.ArrowBack, contentDescription = "返回", tint = Color.White)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = song?.title ?: "未在播放",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.align(Alignment.TopStart).padding(top = 64.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = song?.artist ?: "",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.85f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.align(Alignment.TopStart).padding(top = 104.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(72.dp))
+
+                    // 功能键行: 播放列表 / 喜欢 / 加入歌单
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {}) {
+                            Icon(Icons.Rounded.QueueMusic, contentDescription = "播放列表", tint = Color.White)
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        IconButton(onClick = {}) {
+                            Icon(Icons.Rounded.FavoriteBorder, contentDescription = "喜欢", tint = Color.White)
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        IconButton(onClick = {}) {
+                            Icon(Icons.Rounded.PlaylistAdd, contentDescription = "加入歌单", tint = Color.White)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    CarProgressRow(pc)
+                    Spacer(Modifier.height(4.dp))
+                    CarTransportControls(pc)
                 }
             }
         } else {
-            // square-ish car screen: stack vertically
-            Column(Modifier.fillMaxSize().padding(24.dp)) {
+            // 方屏/竖屏车载: 上下堆叠, 仍用粉紫渐变白字
+            Column(Modifier.fillMaxSize().padding(28.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Rounded.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.Rounded.ArrowBack, contentDescription = "返回", tint = Color.White)
                     }
-                    Text("正在播放", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    Text("正在播放", style = MaterialTheme.typography.titleMedium,
+                        color = Color.White, modifier = Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth().weight(1f).clickable { showLyrics = !showLyrics }) {
+                Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(24.dp))
+                    .background(Color.White.copy(alpha = 0.12f)).clickable { showLyrics = !showLyrics }) {
                     if (showLyrics) {
                         LyricsView(pc, Modifier.fillMaxSize())
                     } else {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            SongCover(model = song?.pic, modifier = Modifier.fillMaxWidth(0.62f).aspectRatio(1f).clip(RoundedCornerShape(26.dp)))
+                            SongCover(model = song?.pic,
+                                modifier = Modifier.fillMaxWidth(0.55f).aspectRatio(1f)
+                                    .clip(RoundedCornerShape(22.dp)))
                         }
                     }
+                    Text(if (showLyrics) "点击查看专辑" else "点击查看动态歌词",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp))
                 }
+                Spacer(Modifier.height(12.dp))
+                Text(song?.title ?: "", style = MaterialTheme.typography.titleMedium, color = Color.White,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(song?.artist ?: "", style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.8f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
-                SongHeader(song)
-                Spacer(Modifier.height(8.dp))
-                ProgressRow(pc)
-                TransportControls(pc, Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                BottomActionRow(pc, container, Modifier.fillMaxWidth())
+                CarProgressRow(pc)
+                CarTransportControls(pc)
             }
         }
     }
 }
 
 @Composable
-private fun SongHeader(song: Song?) {
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = song?.title ?: "未在播放", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(4.dp))
-        Text(text = song?.artist ?: "", style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+private fun CarProgressRow(pc: PlayerController, modifier: Modifier = Modifier) {
+    val position by pc.positionMs.collectAsState()
+    val duration by pc.durationMs.collectAsState()
+    var dragPosition by remember { mutableStateOf<Float?>(null) }
+    val shown = dragPosition ?: position.toFloat()
+    val total = (if (duration > 0) duration else 1).toFloat()
+
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Slider(
+            value = shown.coerceIn(0f, total),
+            onValueChange = { dragPosition = it },
+            onValueChangeFinished = {
+                dragPosition?.let { pc.seekTo(it.toLong()) }
+                dragPosition = null
+            },
+            valueRange = 0f..total,
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+            )
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatDuration(shown.toLong()), style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.8f))
+            Text(formatDuration(total.toLong()), style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.8f))
+        }
+    }
+}
+
+@Composable
+private fun CarTransportControls(pc: PlayerController, modifier: Modifier = Modifier) {
+    val playing by pc.isPlaying.collectAsState()
+    val hasPrev by pc.hasPrevious.collectAsState()
+    val hasNext by pc.hasNext.collectAsState()
+
+    Row(
+        modifier = modifier.padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = { pc.toggleShuffle() }) {
+            Icon(Icons.Rounded.Shuffle, contentDescription = "随机",
+                tint = if (pc.shuffle) Color.White else Color.White.copy(alpha = 0.5f))
+        }
+        IconButton(onClick = { pc.previous() }, enabled = hasPrev) {
+            Icon(Icons.Rounded.SkipPrevious, contentDescription = "上一首", Modifier.size(34.dp), tint = Color.White)
+        }
+        Box(
+            modifier = Modifier.size(68.dp).clip(RoundedCornerShape(50)).background(Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            IconButton(onClick = { pc.togglePlayPause() }, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (playing) "暂停" else "播放",
+                    tint = CarPinkBottom,
+                    modifier = Modifier.size(38.dp)
+                )
+            }
+        }
+        IconButton(onClick = { pc.next() }, enabled = hasNext) {
+            Icon(Icons.Rounded.SkipNext, contentDescription = "下一首", Modifier.size(34.dp), tint = Color.White)
+        }
+        IconButton(onClick = {
+            pc.setRepeatMode(
+                when (pc.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                    else -> Player.REPEAT_MODE_OFF
+                }
+            )
+        }) {
+            Icon(
+                if (pc.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                contentDescription = "循环",
+                tint = if (pc.repeatMode != Player.REPEAT_MODE_OFF) Color.White else Color.White.copy(alpha = 0.5f)
+            )
+        }
     }
 }
 

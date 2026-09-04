@@ -43,12 +43,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // Minify off: keeps behavior identical to debug and avoids R8 stripping
+            // classes that the WebView bridge / reflection rely on.
+            isMinifyEnabled = false
             isShrinkResources = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
             signingConfig = signingConfigs.getByName("release")
         }
         debug {
